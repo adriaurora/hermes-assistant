@@ -200,7 +200,7 @@ private fun IdleContent(hasPermission: Boolean, hint: String?, onMicTap: () -> U
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
-            StatusTag("WAKE WORD ACTIVE", JarvisColors.Cyan)
+            StatusTag("TAP MIC TO TALK", JarvisColors.Cyan)
 
             // Glowing mic button with pulse ring
             Box(contentAlignment = Alignment.Center) {
