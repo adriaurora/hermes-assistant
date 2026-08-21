@@ -63,18 +63,17 @@ fun SettingsScreen(onBack: () -> Unit) {
     // field + [savedKey] means "keep the stored token" on save.
     var apiKey by remember { mutableStateOf("") }
     var savedKey by remember { mutableStateOf(false) }
-    var model by remember { mutableStateOf(SettingsStore.DEFAULT_MODEL) }
     var loaded by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
 
     suspend fun persist() {
-        store.updateConnection(baseUrl, apiKey.ifBlank { null }, model)
+        store.updateConnection(baseUrl, apiKey.ifBlank { null })
     }
 
     fun clearSavedKey() {
         scope.launch {
-            store.updateConnection(baseUrl, "", model)
+            store.updateConnection(baseUrl, "")
             savedKey = false
             status = null
         }
@@ -84,7 +83,6 @@ fun SettingsScreen(onBack: () -> Unit) {
         val s = store.settings.first()
         baseUrl = s.baseUrl
         savedKey = s.apiKey.isNotEmpty()
-        model = s.model
         loaded = true
     }
 
@@ -175,13 +173,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                 if (savedKey) {
                     NeutralButton("Clear saved key") { clearSavedKey() }
                 }
-                OutlinedTextField(
-                    value = model,
-                    onValueChange = { model = it },
-                    label = { Text("Model") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors,
+
+                Text(
+                    "Model selection is controlled by Hermes (its session/default model).",
+                    fontFamily = DmSans,
+                    fontSize = 12.sp,
+                    color = JarvisColors.Muted,
                 )
 
                 PillButton(

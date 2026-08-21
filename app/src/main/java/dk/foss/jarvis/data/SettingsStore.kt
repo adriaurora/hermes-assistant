@@ -14,11 +14,10 @@ import kotlinx.coroutines.launch
 
 private val Context.dataStore by preferencesDataStore(name = "jarvis_settings")
 
-/** User configuration: how to reach Hermes. */
+/** User configuration: how to reach Hermes. Model selection is left to Hermes. */
 data class JarvisSettings(
     val baseUrl: String,
     val apiKey: String,
-    val model: String,
 ) {
     val isConfigured: Boolean get() = baseUrl.isNotEmpty() && apiKey.isNotEmpty()
 }
@@ -30,9 +29,9 @@ class SettingsStore(private val context: Context) {
         // LEGACY location of the plaintext API key; migrated into [SecureStore]
         // on first read and removed. Never written again.
         val API_KEY = stringPreferencesKey("api_key")
+        // LEGACY keys from removed features (model override, wake word,
+        // ElevenLabs). Purged on first migration run; never read.
         val MODEL = stringPreferencesKey("model")
-        // Legacy keys from the removed wake-word / ElevenLabs era. No longer
-        // read or written; kept listed so a future cleanup knows they exist.
         val ELEVEN_KEY = stringPreferencesKey("eleven_key")
         val ELEVEN_VOICE = stringPreferencesKey("eleven_voice")
         val WAKE_ENABLED = booleanPreferencesKey("wake_enabled")
@@ -50,21 +49,11 @@ class SettingsStore(private val context: Context) {
         val legacy = p[Keys.API_KEY]
         val token = secure.importOnce(legacy)
         if (token != null && legacy != null) {
-            purgeScope.launch {
-                context.dataStore.edit {
-                    it.remove(Keys.API_KEY)
-                    it.remove(Keys.ELEVEN_KEY)
-                    it.remove(Keys.ELEVEN_VOICE)
-                    it.remove(Keys.WAKE_ENABLED)
-                }
-            }
+            purgeScope.launch { purgeLegacyKeys() }
         }
         JarvisSettings(
             baseUrl = p[Keys.BASE_URL] ?: "",
             apiKey = token.orEmpty(),
-            // Empty, or the previous default ("kimi-for-coding"), migrates to DEFAULT_MODEL
-            // so existing installs flip to the new model; a deliberately-set model is kept.
-            model = (p[Keys.MODEL] ?: "").let { if (it.isEmpty() || it == LEGACY_MODEL) DEFAULT_MODEL else it },
         )
     }
 
@@ -75,7 +64,7 @@ class SettingsStore(private val context: Context) {
      * - other → replace the stored token.
      * Any legacy plaintext key in DataStore is removed either way.
      */
-    suspend fun updateConnection(baseUrl: String, apiKey: String?, model: String) {
+    suspend fun updateConnection(baseUrl: String, apiKey: String?) {
         context.dataStore.edit { p ->
             p[Keys.BASE_URL] = baseUrl.trim().trimEnd('/')
             if (apiKey != null) {
@@ -85,12 +74,19 @@ class SettingsStore(private val context: Context) {
                 secure.importOnce(p[Keys.API_KEY]) // preserve a never-imported legacy key
             }
             p.remove(Keys.API_KEY)
-            p[Keys.MODEL] = model.trim().ifEmpty { DEFAULT_MODEL }
+            p.remove(Keys.MODEL)
         }
     }
 
-    companion object {
-        const val DEFAULT_MODEL = "mimo-v2.5-pro-ultraspeed"
-        const val LEGACY_MODEL = "kimi-for-coding" // prior default; migrated to DEFAULT_MODEL
+    /** Remove keys from removed features (model override, wake word, ElevenLabs). */
+    private suspend fun purgeLegacyKeys() {
+        context.dataStore.edit {
+            it.remove(Keys.MODEL)
+            it.remove(Keys.ELEVEN_KEY)
+            it.remove(Keys.ELEVEN_VOICE)
+            it.remove(Keys.WAKE_ENABLED)
+        }
     }
+
+    companion object
 }
