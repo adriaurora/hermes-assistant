@@ -247,24 +247,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun extractSentences() {
         while (true) {
-            val s = sentenceBuffer
-            var cut = -1
-            for (i in s.indices) {
-                val c = s[i]
-                if (c == '\n') { cut = i; break }
-                // sentence end only when we already see the following char is whitespace
-                // (so "3.5" or a trailing "." mid-stream isn't split prematurely)
-                if ((c == '.' || c == '!' || c == '?') && i + 1 < s.length && s[i + 1].isWhitespace()) {
-                    cut = i; break
-                }
-            }
-            if (cut < 0 && s.length > 180) { // soft cap so one long clause still starts early
-                val sp = s.lastIndexOf(' ')
-                if (sp > 40) cut = sp
-            }
-            if (cut < 0) break
-            val sentence = s.substring(0, cut + 1).trim()
-            s.delete(0, cut + 1)
+            val sentence = SentenceSplitter.takeNext(sentenceBuffer) ?: break
             if (sentence.isNotEmpty()) enqueueSpeech(sentence)
         }
     }

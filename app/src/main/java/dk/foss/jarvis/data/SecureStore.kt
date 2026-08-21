@@ -103,7 +103,7 @@ class PrefsBlobStore(context: Context) : SecretBlobStore {
  * memory long enough to build an HTTP header — never in DataStore, logs, or
  * BuildConfig. The process-wide instance is obtained via [get].
  */
-class SecureStore private constructor(
+class SecureStore internal constructor(
     private val cipher: AeadCipher,
     private val blobs: SecretBlobStore,
 ) {
@@ -133,7 +133,7 @@ class SecureStore private constructor(
     }
 
     companion object {
-        private const val TOKEN_ALIAS = "hermes_api_token"
+        internal const val TOKEN_ALIAS = "hermes_api_token"
 
         @Volatile
         private var instance: SecureStore? = null
