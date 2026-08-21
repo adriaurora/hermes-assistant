@@ -57,11 +57,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private var turn = 0 // bumped each turn; stale async callbacks check this and bail
     private var retriedThisTurn = false
 
-    // Wake-word re-arm bookkeeping. The wake service was removed in the MVP;
-    // this is inert until the long-press UX cleanup deletes it.
-    private var currentTurnFromWake = false
-    private var emptyWakeTurns = 0
-
     // Speak a complete sentence that's been sitting in the buffer once the stream
     // goes quiet (e.g. the agent paused to run a tool), not only when more text arrives.
     private val idleFlush = Runnable { flushPendingSentence() }
@@ -82,11 +77,10 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun startListening(fromWake: Boolean = false) {
-        // A conversation auto-continues: after Jarvis speaks it listens again.
+    fun startListening() {
+        // A conversation auto-continues: after Hermes speaks it listens again.
         continuous = true
         retriedThisTurn = false
-        currentTurnFromWake = fromWake
         viewModelScope.launch {
             ensureReady()
             if (settings?.isConfigured != true) {
@@ -133,8 +127,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun resetView() {
         turn++ // invalidate any in-flight callbacks from a prior screen visit
-        emptyWakeTurns = 0
-        currentTurnFromWake = false
         runCatching { recognizer?.stop() }
         source?.cancel(); source = null
         transcript.value = ""
@@ -184,7 +176,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun think(userText: String) {
         val myTurn = turn
-        emptyWakeTurns = 0 // got real speech — reset the wake loop-breaker
         hint.value = null
         // Pipeline state was already cleared by beginTurn(); only the stream-status
         // flags are new for this thinking phase.
@@ -315,9 +306,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun goIdle() {
         state.value = ConvState.Idle
-        // Count consecutive *wake-triggered* empty turns (inert since wake removal;
-        // kept until the long-press UX cleanup).
-        if (currentTurnFromWake) emptyWakeTurns++ else emptyWakeTurns = 0
     }
 
     fun onMicTap() {
@@ -330,7 +318,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     fun stopAll() {
         continuous = false
         turn++
-        emptyWakeTurns = 0
         main.removeCallbacks(idleFlush)
         main.removeCallbacks(stallIndicator)
         working.value = false

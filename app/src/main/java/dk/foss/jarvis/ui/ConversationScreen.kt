@@ -100,8 +100,9 @@ fun ConversationScreen(vm: ConversationViewModel, assistTrigger: Int, onExit: ()
     LaunchedEffect(assistTrigger) {
         if (assistTrigger != lastTrigger) {
             lastTrigger = assistTrigger
+            // Long-press assist gesture: start listening immediately.
             if (hasPermission && state == ConvState.Idle) {
-                vm.startListening(fromWake = true)
+                vm.startListening()
             }
         }
     }
