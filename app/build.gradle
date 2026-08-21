@@ -4,16 +4,8 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.serialization'
 }
 
-// Optional preconfiguration: a gitignored keys.properties can bake in a default
-// Hermes base URL + API key so a build ships ready-to-connect. Repo stays clean.
-def keysFile = rootProject.file("keys.properties")
-def keysProps = new Properties()
-if (keysFile.exists()) keysProps.load(new FileInputStream(keysFile))
-def jvEscape = { String s -> (s ?: "").replace("\\", "\\\\").replace("\"", "\\\"") }
-def defBaseUrl = jvEscape(keysProps.getProperty("JARVIS_BASE_URL", ""))
-def defApiKey = jvEscape(keysProps.getProperty("JARVIS_API_KEY", ""))
-def defElevenKey = jvEscape(keysProps.getProperty("JARVIS_ELEVEN_KEY", ""))
-def defElevenVoice = jvEscape(keysProps.getProperty("JARVIS_ELEVEN_VOICE", ""))
+// No secrets are compiled into this app: the Hermes base URL and API key are
+// entered in Settings at runtime; the key is Keystore-encrypted at rest.
 
 android {
     namespace 'dk.foss.jarvis'
@@ -32,10 +24,6 @@ android {
             // ONNX Runtime ships native libs per-ABI; real phones are ARM.
             abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
-        buildConfigField "String", "DEFAULT_BASE_URL", "\"${defBaseUrl}\""
-        buildConfigField "String", "DEFAULT_API_KEY", "\"${defApiKey}\""
-        buildConfigField "String", "DEFAULT_ELEVEN_KEY", "\"${defElevenKey}\""
-        buildConfigField "String", "DEFAULT_ELEVEN_VOICE", "\"${defElevenVoice}\""
     }
 
     buildTypes {

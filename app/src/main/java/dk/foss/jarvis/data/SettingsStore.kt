@@ -5,9 +5,12 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import dk.foss.jarvis.BuildConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 private val Context.dataStore by preferencesDataStore(name = "jarvis_settings")
 
@@ -28,6 +31,8 @@ class SettingsStore(private val context: Context) {
 
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
+        // LEGACY location of the plaintext API key; migrated into [SecureStore]
+        // on first read and removed. Never written again.
         val API_KEY = stringPreferencesKey("api_key")
         val MODEL = stringPreferencesKey("model")
         val ELEVEN_KEY = stringPreferencesKey("eleven_key")
@@ -35,16 +40,28 @@ class SettingsStore(private val context: Context) {
         val WAKE_ENABLED = booleanPreferencesKey("wake_enabled")
     }
 
+    private val secure = SecureStore.get(context)
+    private val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * The Hermes bearer token lives only in [SecureStore] (Keystore-encrypted).
+     * If a legacy plaintext key is found in DataStore it is imported once and
+     * the plaintext value is purged asynchronously.
+     */
     val settings: Flow<JarvisSettings> = context.dataStore.data.map { p ->
+        val legacy = p[Keys.API_KEY]
+        val token = secure.importOnce(legacy)
+        if (token != null && legacy != null) {
+            purgeScope.launch { context.dataStore.edit { it.remove(Keys.API_KEY) } }
+        }
         JarvisSettings(
-            baseUrl = p[Keys.BASE_URL] ?: BuildConfig.DEFAULT_BASE_URL,
-            apiKey = p[Keys.API_KEY] ?: BuildConfig.DEFAULT_API_KEY,
+            baseUrl = p[Keys.BASE_URL] ?: "",
+            apiKey = token.orEmpty(),
             // Empty, or the previous default ("kimi-for-coding"), migrates to DEFAULT_MODEL
             // so existing installs flip to the new model; a deliberately-set model is kept.
             model = (p[Keys.MODEL] ?: "").let { if (it.isEmpty() || it == LEGACY_MODEL) DEFAULT_MODEL else it },
-            elevenKey = (p[Keys.ELEVEN_KEY] ?: "").ifEmpty { BuildConfig.DEFAULT_ELEVEN_KEY },
-            elevenVoiceId = (p[Keys.ELEVEN_VOICE] ?: "")
-                .ifEmpty { BuildConfig.DEFAULT_ELEVEN_VOICE.ifEmpty { DEFAULT_ELEVEN_VOICE } },
+            elevenKey = p[Keys.ELEVEN_KEY] ?: "",
+            elevenVoiceId = (p[Keys.ELEVEN_VOICE] ?: "").ifEmpty { DEFAULT_ELEVEN_VOICE },
             wakeEnabled = p[Keys.WAKE_ENABLED] ?: false,
         )
     }
@@ -53,10 +70,23 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { p -> p[Keys.WAKE_ENABLED] = enabled }
     }
 
-    suspend fun updateConnection(baseUrl: String, apiKey: String, model: String) {
+    /**
+     * Save connection settings. [apiKey] semantics:
+     * - null  → keep whatever token is currently stored;
+     * - ""    → clear the stored token;
+     * - other → replace the stored token.
+     * Any legacy plaintext key in DataStore is removed either way.
+     */
+    suspend fun updateConnection(baseUrl: String, apiKey: String?, model: String) {
         context.dataStore.edit { p ->
             p[Keys.BASE_URL] = baseUrl.trim().trimEnd('/')
-            p[Keys.API_KEY] = apiKey.trim()
+            if (apiKey != null) {
+                val trimmed = apiKey.trim()
+                if (trimmed.isEmpty()) secure.clearToken() else secure.saveToken(trimmed)
+            } else {
+                secure.importOnce(p[Keys.API_KEY]) // preserve a never-imported legacy key
+            }
+            p.remove(Keys.API_KEY)
             p[Keys.MODEL] = model.trim().ifEmpty { DEFAULT_MODEL }
         }
     }

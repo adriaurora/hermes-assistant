@@ -83,7 +83,10 @@ fun SettingsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var baseUrl by remember { mutableStateOf("") }
+    // Write-only: the saved token is never loaded back into UI state. Blank
+    // field + [savedKey] means "keep the stored token" on save.
     var apiKey by remember { mutableStateOf("") }
+    var savedKey by remember { mutableStateOf(false) }
     var model by remember { mutableStateOf(SettingsStore.DEFAULT_MODEL) }
     var elevenKey by remember { mutableStateOf("") }
     var elevenVoice by remember { mutableStateOf(SettingsStore.DEFAULT_ELEVEN_VOICE) }
@@ -131,8 +134,16 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
 
     suspend fun persist() {
-        store.updateConnection(baseUrl, apiKey, model)
+        store.updateConnection(baseUrl, apiKey.ifBlank { null }, model)
         store.updateVoice(elevenKey, elevenVoice)
+    }
+
+    fun clearSavedKey() {
+        scope.launch {
+            store.updateConnection(baseUrl, "", model)
+            savedKey = false
+            status = null
+        }
     }
 
     fun enableWake() {
@@ -170,7 +181,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         val s = store.settings.first()
         baseUrl = s.baseUrl
-        apiKey = s.apiKey
+        savedKey = s.apiKey.isNotEmpty()
         model = s.model
         elevenKey = s.elevenKey
         elevenVoice = s.elevenVoiceId
@@ -269,11 +280,25 @@ fun SettingsScreen(onBack: () -> Unit) {
                     value = apiKey,
                     onValueChange = { apiKey = it; status = null },
                     label = { Text("API key (Bearer)") },
+                    placeholder = { Text(if (savedKey) "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (saved)" else "Paste your Hermes API key") },
+                    supportingText = {
+                        if (savedKey && apiKey.isBlank()) {
+                            Text(
+                                "A key is saved and encrypted on this device. Leave blank to keep it.",
+                                fontFamily = DmSans,
+                                fontSize = 12.sp,
+                                color = JarvisColors.Muted,
+                            )
+                        }
+                    },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors,
                 )
+                if (savedKey) {
+                    NeutralButton("Clear saved key") { clearSavedKey() }
+                }
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it },
@@ -304,7 +329,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                     },
                     accent = true,
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = loaded && !testing && baseUrl.isNotBlank() && apiKey.isNotBlank(),
+                    enabled = loaded && !testing && baseUrl.isNotBlank() &&
+                        (apiKey.isNotBlank() || savedKey),
                 )
                 if (testing) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = JarvisColors.Cyan)
