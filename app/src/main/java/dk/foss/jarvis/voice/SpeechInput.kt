@@ -2,15 +2,23 @@ package dk.foss.jarvis.voice
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 
 /**
- * On-device speech recognition via Android's [SpeechRecognizer]. A single
- * recognizer instance is reused across turns (create/destroy churn makes the
- * recognition service drop its binding → ERROR_SERVER_DISCONNECTED). Main thread only.
+ * Speech recognition via Android's [SpeechRecognizer]. On API 31+ the
+ * on-device recognizer is preferred when the device provides one
+ * ([SpeechRecognizer.isOnDeviceRecognitionAvailable]); audio then never
+ * leaves the phone. Otherwise this falls back to the normal system
+ * recognizer, which MAY route audio through the platform provider's network
+ * service (typically Google) and is not guaranteed to be local.
+ *
+ * A single recognizer instance is reused across turns (create/destroy churn
+ * makes the recognition service drop its binding → ERROR_SERVER_DISCONNECTED).
+ * Main thread only.
  */
 class SpeechInput(private val context: Context) : VoiceRecognizer {
 
@@ -86,7 +94,14 @@ class SpeechInput(private val context: Context) : VoiceRecognizer {
 
     private fun createRecognizer(): SpeechRecognizer? {
         if (!isAvailable()) return null
-        return SpeechRecognizer.createSpeechRecognizer(context).also {
+        val sr = if (Build.VERSION.SDK_INT >= 31 &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        ) {
+            runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }.getOrNull()
+        } else {
+            null
+        } ?: SpeechRecognizer.createSpeechRecognizer(context)
+        return sr.also {
             it.setRecognitionListener(recognitionListener)
             recognizer = it
         }
