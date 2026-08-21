@@ -15,3 +15,6 @@ keys.properties
 
 # Multi-model review artifacts
 .aidelegate/
+
+# Local agent/editor tooling
+opencode.json

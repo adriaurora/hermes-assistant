@@ -11,6 +11,30 @@ The app talks to **one thing only: your Hermes `api_server`** (the
 OpenAI-compatible `/v1/chat/completions` endpoint). No companion server, no
 sidecar — point it at your Hermes URL + API key and go.
 
+## Fork notes
+
+This repository is a private fork of
+[Bwarhness/jarvis-assistant](https://github.com/Bwarhness/jarvis-assistant),
+hardened for personal use with a self-hosted Hermes agent: no wake word, no
+third-party voice providers, Keystore-protected credentials, and backups
+disabled. Upstream history is preserved.
+
+Remotes:
+
+- `upstream` — the original Jarvis repository.
+- `origin` — currently also points at upstream until a private fork remote
+  exists; update it with `git remote set-url origin <private-url>` (do not
+  invent a URL).
+
+Sync with upstream:
+
+```bash
+git fetch upstream
+git rebase upstream/master
+```
+
+Preserves Apache-2.0 licensing and upstream attribution (see Credits).
+
 ## Features
 
 - 💬 **Streaming chat** with your Hermes agent (continuous sessions via `X-Hermes-Session-Id`).
