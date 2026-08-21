@@ -1,15 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimalist digital-butler mark: line-art top hat + monocle,
+     brand-cyan strokes on deep-space dark. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group
-        android:scaleX="2.4"
-        android:scaleY="2.4"
-        android:translateX="25.2"
-        android:translateY="25.2">
-        <path
-            android:fillColor="#E6ECFF"
-            android:pathData="M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11L5,11c0,3.41 2.72,6.23 6,6.72V21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z" />
-    </group>
+
+    <!-- Top-hat crown -->
+    <path
+        android:pathData="M44,47 L44,32 Q44,29.5 46.5,29.5 L61.5,29.5 Q64,29.5 64,32 L64,47"
+        android:strokeColor="#5FF4E2"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+
+    <!-- Hat brim -->
+    <path
+        android:pathData="M36.5,50.5 L71.5,50.5"
+        android:strokeColor="#5FF4E2"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+
+    <!-- Monocle ring -->
+    <path
+        android:pathData="M47.5,61 A8.75,8.75 0 1,1 65,61 A8.75,8.75 0 1,1 47.5,61"
+        android:strokeColor="#5FF4E2"
+        android:strokeWidth="3.2"
+        android:fillColor="#00000000"/>
+
+    <!-- Monocle glint -->
+    <path
+        android:pathData="M55.4,58.2 m-1.7,0 a1.7,1.7 0 1,0 3.4,0 a1.7,1.7 0 1,0 -3.4,0"
+        android:fillColor="#9FE9DF"/>
+
+    <!-- Monocle handle -->
+    <path
+        android:pathData="M63.4,68 L67.4,73.2"
+        android:strokeColor="#5FF4E2"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+
 </vector>
