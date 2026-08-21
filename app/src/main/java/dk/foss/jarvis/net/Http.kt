@@ -5,7 +5,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Shared OkHttp clients. One process-wide connection/thread pool, reused by all
- * network callers (Hermes chat, ElevenLabs TTS/STT) instead of building a fresh
+ * network callers (the Hermes chat client) instead of building a fresh
  * client per request.
  */
 object Http {

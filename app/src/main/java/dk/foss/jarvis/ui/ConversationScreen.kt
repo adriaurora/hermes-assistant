@@ -298,7 +298,7 @@ private fun IdleContent(hasPermission: Boolean, hint: String?, onMicTap: () -> U
                 }
             } else {
                 Text(
-                    text = "Tap, or say \"Hey Jarvis\"",
+                    text = "Tap the mic to talk",
                     fontFamily = DmSans,
                     fontWeight = FontWeight.Normal,
                     fontSize = 14.sp,
@@ -637,7 +637,7 @@ private fun ErrorLayout(
             }
 
             Text(
-                text = "Can't reach Jarvis",
+                text = "Can't reach Hermes",
                 fontFamily = SpaceGrotesk,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 21.sp,

@@ -11,12 +11,9 @@ import dk.foss.jarvis.data.JarvisSettings
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.HermesClient
 import dk.foss.jarvis.voice.AndroidTts
-import dk.foss.jarvis.voice.ElevenLabsTts
-import dk.foss.jarvis.voice.ScribeRecognizer
 import dk.foss.jarvis.voice.SpeechInput
 import dk.foss.jarvis.voice.TtsEngine
 import dk.foss.jarvis.voice.VoiceRecognizer
-import dk.foss.jarvis.wake.WakeWordService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.sse.EventSource
@@ -49,7 +46,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private var settings: JarvisSettings? = null
     private var tts: TtsEngine? = null
-    private var androidFallback: AndroidTts? = null
     private var source: EventSource? = null
     private var continuous = true
 
@@ -61,12 +57,10 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private var turn = 0 // bumped each turn; stale async callbacks check this and bail
     private var retriedThisTurn = false
 
-    // While idle in a conversation we re-arm "Hey Jarvis" so the user can re-activate
-    // by voice. Loop-breaker: if wake-triggered turns keep coming back empty, stop
-    // re-arming and require a tap (real speech / a tap resets the counter).
+    // Wake-word re-arm bookkeeping. The wake service was removed in the MVP;
+    // this is inert until the long-press UX cleanup deletes it.
     private var currentTurnFromWake = false
     private var emptyWakeTurns = 0
-    private val rearmWake = Runnable { WakeWordService.resumeListening() }
 
     // Speak a complete sentence that's been sitting in the buffer once the stream
     // goes quiet (e.g. the agent paused to run a tool), not only when more text arrives.
@@ -81,20 +75,9 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun ensureReady() {
         val s = settings ?: settingsStore.settings.first().also { settings = it }
-        if (tts == null) {
-            tts = if (s.useElevenLabs) {
-                ElevenLabsTts(getApplication(), s.elevenKey, s.elevenVoiceId)
-            } else {
-                AndroidTts(getApplication(), languageTag = null)
-            }
-        }
+        if (tts == null) tts = AndroidTts(getApplication(), languageTag = null)
         if (recognizer == null) {
-            // With an ElevenLabs key, use Scribe (far better accuracy); else on-device.
-            recognizer = if (s.useElevenLabs) {
-                ScribeRecognizer(getApplication(), s.elevenKey, languageCode = null)
-            } else {
-                SpeechInput(getApplication())
-            }
+            recognizer = SpeechInput(getApplication())
             recognizer?.prewarm()
         }
     }
@@ -104,10 +87,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         continuous = true
         retriedThisTurn = false
         currentTurnFromWake = fromWake
-        // Free the mic from the always-on wake listener so STT can record, and cancel
-        // any pending re-arm so the wake engine doesn't grab the mic mid-capture.
-        main.removeCallbacks(rearmWake)
-        WakeWordService.pauseListening()
         viewModelScope.launch {
             ensureReady()
             if (settings?.isConfigured != true) {
@@ -128,11 +107,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         main.removeCallbacks(stallIndicator)
         working.value = false
         stalled.value = false
-        // Stop any in-flight recognition so the next start isn't blocked by
-        // AudioCapture's "if (active) return" guard (which silently drops it).
+        // Stop any in-flight recognition so the next start isn't blocked by a
+        // still-bound recognizer.
         runCatching { recognizer?.stop() }
         source?.cancel(); source = null
-        runCatching { tts?.stop(); androidFallback?.stop() }
+        runCatching { tts?.stop() }
         ttsQueue.clear()
         sentenceBuffer.setLength(0)
         speaking = false
@@ -154,7 +133,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun resetView() {
         turn++ // invalidate any in-flight callbacks from a prior screen visit
-        main.removeCallbacks(rearmWake)
         emptyWakeTurns = 0
         currentTurnFromWake = false
         runCatching { recognizer?.stop() }
@@ -318,25 +296,13 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         speakingIndex.value = spokenCount
         spokenCount++
         if (state.value != ConvState.Speaking) state.value = ConvState.Speaking
-        val engine = tts ?: ensureFallback()
+        val engine = tts
         if (engine == null) { speaking = false; return }
         val myTurn = turn
         engine.speak(
             text = next,
             onDone = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
-            onError = {
-                // premium engine failed on this sentence — say it with on-device TTS, then continue
-                val fb = ensureFallback()
-                if (fb != null && fb !== engine) {
-                    fb.speak(
-                        text = next,
-                        onDone = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
-                        onError = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
-                    )
-                } else {
-                    main.post { if (turn == myTurn) { speaking = false; pump() } }
-                }
-            },
+            onError = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
         )
     }
 
@@ -345,30 +311,13 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Go idle WITHIN the conversation. We deliberately do NOT resume the wake word
-     * here: the conversation screen owns the mic the whole time it is open, and
-     * re-arming the wake word on idle created a feedback loop (idle -> wake fires ->
-     * assist relaunch -> startListening -> no-speech -> idle -> ...). The wake word
-     * is resumed only when the conversation is actually left (stopAll/onCleared).
-     * To re-engage after a silence, tap the mic.
+     * Go idle WITHIN the conversation. To re-engage after a silence, tap the mic.
      */
     private fun goIdle() {
         state.value = ConvState.Idle
-        main.removeCallbacks(rearmWake)
-        // Count consecutive *wake-triggered* empty turns; a non-wake idle (after a
-        // real exchange, a tap, or auto-listen) resets the counter.
+        // Count consecutive *wake-triggered* empty turns (inert since wake removal;
+        // kept until the long-press UX cleanup).
         if (currentTurnFromWake) emptyWakeTurns++ else emptyWakeTurns = 0
-        if (emptyWakeTurns <= MAX_EMPTY_WAKE) {
-            // Re-arm "Hey Jarvis" after a short settle so TTS tail/echo can't self-trigger.
-            main.postDelayed(rearmWake, WAKE_REARM_DELAY_MS)
-        }
-        // else: too many empty wake turns in a row — require a tap (loop-breaker).
-    }
-
-    private fun ensureFallback(): TtsEngine? {
-        (tts as? AndroidTts)?.let { return it }
-        if (androidFallback == null) androidFallback = AndroidTts(getApplication(), languageTag = null)
-        return androidFallback
     }
 
     fun onMicTap() {
@@ -384,12 +333,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         emptyWakeTurns = 0
         main.removeCallbacks(idleFlush)
         main.removeCallbacks(stallIndicator)
-        main.removeCallbacks(rearmWake)
         working.value = false
         stalled.value = false
         recognizer?.release()
         recognizer = null
-        runCatching { tts?.stop(); androidFallback?.stop() }
+        runCatching { tts?.stop() }
         source?.cancel(); source = null
         ttsQueue.clear()
         sentenceBuffer.setLength(0)
@@ -402,28 +350,22 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         state.value = ConvState.Idle
         hint.value = null
         // Save the conversation (covers turns that ended in an error/cancel, not just
-        // successful replies) before handing the mic back to the wake listener.
+        // successful replies).
         repo.persistAsync()
-        WakeWordService.resumeListening()
     }
 
     override fun onCleared() {
         main.removeCallbacks(idleFlush)
         main.removeCallbacks(stallIndicator)
-        main.removeCallbacks(rearmWake)
         recognizer?.release()
         source?.cancel()
         tts?.shutdown()
-        androidFallback?.shutdown()
         repo.persistAsync()
-        WakeWordService.resumeListening()
         super.onCleared()
     }
 
     private companion object {
         const val IDLE_FLUSH_MS = 350L
         const val STALL_MS = 800L
-        const val WAKE_REARM_DELAY_MS = 1200L
-        const val MAX_EMPTY_WAKE = 2 // consecutive empty wake turns before requiring a tap
     }
 }

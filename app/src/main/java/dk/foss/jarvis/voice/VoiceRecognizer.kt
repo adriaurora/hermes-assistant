@@ -1,6 +1,6 @@
 package dk.foss.jarvis.voice
 
-/** Speech-to-text source. Implementations: on-device Android, or ElevenLabs Scribe. */
+/** Speech-to-text source backed by Android's [android.speech.SpeechRecognizer]. */
 interface VoiceRecognizer {
     fun isAvailable(): Boolean
     fun prewarm() {}

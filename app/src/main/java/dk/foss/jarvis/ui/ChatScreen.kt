@@ -79,7 +79,7 @@ fun ChatScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             JarvisMark()
                             Text(
-                                "Jarvis",
+                                "Hermes Assistant",
                                 fontFamily = SpaceGrotesk,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(start = 10.dp),
@@ -123,7 +123,7 @@ fun ChatScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "Ask Jarvis anything",
+                            "Ask Hermes anything",
                             fontFamily = SpaceGrotesk,
                             fontWeight = FontWeight.Medium,
                             fontSize = 18.sp,
@@ -237,7 +237,7 @@ private fun InputBar(
                 modifier = Modifier.weight(1f),
                 placeholder = {
                     Text(
-                        "Message Jarvis",
+                        "Message Hermes",
                         fontFamily = DmSans,
                         color = JarvisColors.Muted,
                     )
