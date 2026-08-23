@@ -120,6 +120,16 @@ class SecureStore internal constructor(
         blobs.remove(TOKEN_ALIAS)
     }
 
+    fun loadDeviceId(): String? = loadSecret(DEVICE_ID_ALIAS)
+    fun saveDeviceId(value: String) = saveSecret(DEVICE_ID_ALIAS, value)
+    fun clearDeviceId() = blobs.remove(DEVICE_ID_ALIAS)
+    fun loadPushEndpoint(): String? = loadSecret(ENDPOINT_ALIAS)
+    fun savePushEndpoint(value: String) = saveSecret(ENDPOINT_ALIAS, value)
+    fun clearPushEndpoint() = blobs.remove(ENDPOINT_ALIAS)
+
+    private fun loadSecret(alias: String): String? = blobs.get(alias)?.let { cipher.decrypt(it) }?.takeIf { it.isNotEmpty() }
+    private fun saveSecret(alias: String, value: String) { blobs.put(alias, cipher.encrypt(value)) }
+
     /**
      * One-shot migration from the legacy plaintext-in-DataStore era: if no
      * token is stored yet and [legacyPlaintext] is non-blank, encrypt and
@@ -134,6 +144,8 @@ class SecureStore internal constructor(
 
     companion object {
         internal const val TOKEN_ALIAS = "hermes_api_token"
+        internal const val DEVICE_ID_ALIAS = "hermes_device_id"
+        internal const val ENDPOINT_ALIAS = "hermes_push_endpoint"
 
         @Volatile
         private var instance: SecureStore? = null
