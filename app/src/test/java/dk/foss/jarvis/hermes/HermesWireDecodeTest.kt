@@ -106,4 +106,16 @@ class HermesWireDecodeTest {
         assertTrue(resp.automatic)
         assertEquals("hermes.session.model_lock", resp.`object`)
     }
+
+    @Test
+    fun `clear model response decodes the live automatic release shape`() {
+        // Exact body returned by the patched server (v0.3.1) after a clear:
+        // runtime is empty and automatic signals that session.model was
+        // removed (the override is gone, not frozen to a default).
+        val json = """{"object":"hermes.session.model_lock","session_id":"s2","runtime":{},"automatic":true}"""
+        val resp = HermesJson.decodeFromString(ModelLockResponse.serializer(), json)
+        assertEquals("s2", resp.session_id)
+        assertTrue(resp.automatic)
+        assertEquals("hermes.session.model_lock", resp.`object`)
+    }
 }
