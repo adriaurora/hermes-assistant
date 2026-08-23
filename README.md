@@ -43,6 +43,11 @@ Preserves Apache-2.0 licensing and upstream attribution (see Credits).
 - 🔊 Android's built-in offline TTS and on-device speech recognition where available.
 - 🔒 Private by design: the Hermes key is Keystore-encrypted on-device, backups are
   disabled, and no third-party voice/cloud providers are involved.
+- 🔔 **Durable event notifications (v0.5.0)** — Hermes stores device events and
+  wakes the app through UnifiedPush/self-hosted ntfy; Android fetches content
+  over the authenticated Hermes API and posts a native notification. Push sees
+  only an opaque event ID, never reminder or conversation text. See the
+  [event-notification architecture](docs/hermes-v0.5.0-event-notifications.md).
 
 The **brain is always Hermes** — the app only handles the ears, mouth, face, and OS integration.
 
