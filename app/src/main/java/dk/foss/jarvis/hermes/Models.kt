@@ -59,6 +59,34 @@ data class ModelsResponse(val data: List<ModelEntry> = emptyList())
 @Serializable
 data class ModelEntry(val id: String)
 
+// --- durable events and device registration ---
+
+@Serializable
+data class HermesEvent(
+    val event_id: String,
+    val event_type: String,
+    val created_at: Double,
+    val available_at: Double,
+    val expires_at: Double? = null,
+    val source: String? = null,
+    val source_id: String? = null,
+    val session_id: String? = null,
+    val title: String? = null,
+    val body: String? = null,
+    val priority: Int = 0,
+    val status: String? = null,
+    val device_id: String? = null,
+)
+
+@Serializable
+data class HermesEventsPage(val events: List<HermesEvent> = emptyList())
+
+@Serializable
+data class DeviceRegisterResponse(val device_id: String, val status: String)
+
+@Serializable
+data class DeviceOpsResponse(val status: String)
+
 // --- hermes.tool.progress SSE frame (tool activity during a streamed turn) ---
 
 /** Data payload of an `event: hermes.tool.progress` SSE frame; status is running|completed. */
