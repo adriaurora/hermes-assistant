@@ -37,6 +37,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     val hint = mutableStateOf<String?>(null)
     val working = mutableStateOf(false) // Hermes stream still open (response not complete)
     val stalled = mutableStateOf(false) // content paused mid-stream — likely running a tool
+    val toolLabel = mutableStateOf<String?>(null) // real label from hermes.tool.progress frames
 
     // --- follow-along reply display state ---
     val segments = androidx.compose.runtime.mutableStateListOf<String>()
@@ -101,6 +102,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         main.removeCallbacks(stallIndicator)
         working.value = false
         stalled.value = false
+        toolLabel.value = null
         // Stop any in-flight recognition so the next start isn't blocked by a
         // still-bound recognizer.
         runCatching { recognizer?.stop() }
@@ -135,6 +137,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         hint.value = null
         working.value = false
         stalled.value = false
+        toolLabel.value = null
         segments.clear()
         speakingIndex.value = -1
         pendingText.value = ""
@@ -194,12 +197,18 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
             override fun onSessionId(id: String) { repo.setSessionId(id) }
 
+            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
+                if (turn != myTurn) return@onMain
+                toolLabel.value = if (running) (label ?: tool) else null
+            }
+
             override fun onComplete() = onMain {
                 if (turn != myTurn) return@onMain
                 main.removeCallbacks(idleFlush)
                 main.removeCallbacks(stallIndicator)
                 working.value = false
                 stalled.value = false
+                toolLabel.value = null
                 // flush whatever's left as the final sentence
                 val rest = sentenceBuffer.toString().trim()
                 sentenceBuffer.setLength(0)
@@ -216,6 +225,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 main.removeCallbacks(stallIndicator)
                 working.value = false
                 stalled.value = false
+                toolLabel.value = null
                 error.value = message
                 goIdle()
             }
@@ -305,6 +315,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         main.removeCallbacks(stallIndicator)
         working.value = false
         stalled.value = false
+        toolLabel.value = null
         recognizer?.release()
         recognizer = null
         runCatching { tts?.stop() }

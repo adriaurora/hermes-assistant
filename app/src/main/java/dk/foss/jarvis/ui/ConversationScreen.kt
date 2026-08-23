@@ -68,8 +68,10 @@ fun ConversationScreen(vm: ConversationViewModel, assistTrigger: Int, onExit: ()
     val error by vm.error
     val hint by vm.hint
     val working by vm.working
+
     val stalled by vm.stalled
 
+    val toolLabel by vm.toolLabel
     val segments = vm.segments
     val speakingIndex by vm.speakingIndex
     val pendingText by vm.pendingText
@@ -169,6 +171,7 @@ fun ConversationScreen(vm: ConversationViewModel, assistTrigger: Int, onExit: ()
                     ConvState.Thinking -> ThinkingContent(
                         transcript = transcript,
                         stalled = stalled,
+                        toolLabel = toolLabel,
                         onMicTap = {
                             if (hasPermission) vm.onMicTap()
                             else permLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -371,7 +374,12 @@ private fun ListeningContent(transcript: String, onMicTap: () -> Unit) {
 }
 
 @Composable
-private fun ThinkingContent(transcript: String, stalled: Boolean, onMicTap: () -> Unit) {
+private fun ThinkingContent(
+    transcript: String,
+    stalled: Boolean,
+    toolLabel: String?,
+    onMicTap: () -> Unit,
+) {
     // Blinking dots
     val transition = rememberInfiniteTransition(label = "blink")
     val dot1 by transition.animateFloat(
@@ -409,7 +417,11 @@ private fun ThinkingContent(transcript: String, stalled: Boolean, onMicTap: () -
             verticalArrangement = Arrangement.Center,
         ) {
             StatusTag(
-                text = if (stalled) "WORKING" else "THINKING",
+                text = when {
+                    toolLabel != null -> toolLabel.uppercase()
+                    stalled -> "WORKING"
+                    else -> "THINKING"
+                },
                 color = JarvisColors.ThinkBlue,
             )
 

@@ -52,6 +52,20 @@ class ConversationRepository private constructor(private val store: Conversation
         dirty = false
     }
 
+    /**
+     * Replace the active conversation with a local mirror of a server-side Hermes
+     * session (history parity). The mirror binds to the server session id, so the
+     * next request continues that session; it persists on the next save.
+     */
+    fun importServerSession(sessionId: String, title: String, createdAtMs: Long, msgs: List<ChatMessage>) {
+        startNew()
+        this.sessionId = sessionId
+        this.title = title.take(60)
+        this.createdAt = createdAtMs
+        messages.addAll(msgs.map { UiMessage(it.role, it.content) })
+        dirty = true
+    }
+
     fun setSessionId(id: String) {
         if (sessionId != id) { sessionId = id; dirty = true }
     }

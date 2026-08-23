@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 fun HistoryScreen(vm: HistoryViewModel, onOpen: () -> Unit, onBack: () -> Unit) {
     LaunchedEffect(Unit) { vm.refresh() }
     val items by vm.items
+    val notice by vm.notice
 
     DeepSpaceBackground(active = false) {
         Scaffold(
@@ -77,26 +78,53 @@ fun HistoryScreen(vm: HistoryViewModel, onOpen: () -> Unit, onBack: () -> Unit) 
                 )
             },
         ) { padding ->
-            if (items.isEmpty()) {
-                Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(Modifier.padding(padding).fillMaxSize()) {
+                if (notice != null) {
                     Text(
-                        "No conversations yet",
-                        fontFamily = SpaceGrotesk,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 16.sp,
+                        notice.orEmpty(),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        fontFamily = DmSans,
+                        fontSize = 12.sp,
                         color = JarvisColors.Muted,
                     )
                 }
-            } else {
-                LazyColumn(Modifier.padding(padding).fillMaxSize()) {
-                    items(items, key = { it.id }) { meta ->
-                        Row2(
-                            title = meta.title,
-                            subtitle = "${DateUtils.getRelativeTimeSpanString(meta.updatedAt)} \u00b7 ${meta.messageCount} msgs",
-                            onClick = { vm.open(meta.id) { onOpen() } },
-                            onDelete = { vm.delete(meta.id) },
+                if (items.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "No conversations yet",
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 16.sp,
+                            color = JarvisColors.Muted,
                         )
-                        HorizontalDivider(color = JarvisColors.Cyan.copy(alpha = 0.08f))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                        items(items, key = { it.key }) { entry ->
+                            Row2(
+                                title = entry.title,
+                                subtitle = buildString {
+                                    append(DateUtils.getRelativeTimeSpanString(entry.updatedAt))
+                                    append(" \u00b7 ${entry.messageCount} msgs")
+                                    entry.originTag?.let { append("  \u00b7  $it") }
+                                },
+                                deletable = entry.origin == HistoryOrigin.LOCAL,
+                                onClick = {
+                                    when (entry.origin) {
+                                        HistoryOrigin.LOCAL ->
+                                            vm.open(entry.localId!!) { onOpen() }
+                                        HistoryOrigin.SERVER_PHONE, HistoryOrigin.SERVER_OTHER ->
+                                            vm.openServer(
+                                                entry.serverSessionId!!,
+                                                entry.title,
+                                                entry.updatedAt,
+                                            ) { onOpen() }
+                                    }
+                                },
+                                onDelete = { vm.delete(entry.localId!!) },
+                            )
+                            HorizontalDivider(color = JarvisColors.Cyan.copy(alpha = 0.08f))
+                        }
                     }
                 }
             }
@@ -105,7 +133,13 @@ fun HistoryScreen(vm: HistoryViewModel, onOpen: () -> Unit, onBack: () -> Unit) 
 }
 
 @Composable
-private fun Row2(title: String, subtitle: String, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun Row2(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    deletable: Boolean = true,
+) {
     androidx.compose.foundation.layout.Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -132,12 +166,14 @@ private fun Row2(title: String, subtitle: String, onClick: () -> Unit, onDelete:
                 color = JarvisColors.Muted,
             )
         }
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.DeleteOutline,
-                contentDescription = "Delete",
-                tint = JarvisColors.Muted,
-            )
+        if (deletable) {
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = "Delete",
+                    tint = JarvisColors.Muted,
+                )
+            }
         }
     }
 }

@@ -25,4 +25,5 @@ data class ConversationMeta(
     val title: String,
     val updatedAt: Long,
     val messageCount: Int,
+    val sessionId: String? = null, // server session this mirror is bound to, if any
 )
