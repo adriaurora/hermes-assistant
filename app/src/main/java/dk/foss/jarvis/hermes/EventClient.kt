@@ -11,11 +11,17 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 
 /** REST client for Hermes device registration and durable event operations. */
+interface EventApi {
+    suspend fun fetchEvent(id: String): Result<HermesEvent>
+    suspend fun ack(id: String): Result<Unit>
+    suspend fun pending(): Result<HermesEventsPage>
+}
+
 class EventClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val deviceId: String? = null,
-) {
+) : EventApi {
     suspend fun registerDevice(endpoint: String): Result<DeviceRegisterResponse> = postJson(
         "api/devices/register",
         HermesJson.encodeToString(RegisterBody.serializer(), RegisterBody("ntfy", endpoint)),
@@ -25,13 +31,17 @@ class EventClient(
     suspend fun updateDeviceToken(endpoint: String): Result<DeviceOpsResponse> =
         postJson("api/devices/${requiredDeviceId()}/token", endpointBody(endpoint), DeviceOpsResponse.serializer())
 
-    suspend fun fetchEvent(eventId: String): Result<HermesEvent> = getJson(
+    override suspend fun fetchEvent(eventId: String): Result<HermesEvent> = getJson(
         "api/events/${encoded(eventId)}", HermesEvent.serializer(),
     )
 
-    suspend fun fetchPendingEvents(): Result<HermesEventsPage> = getJson(
+    override suspend fun pending(): Result<HermesEventsPage> = getJson(
         "api/events?status=pending&device_id=${encoded(requiredDeviceId())}", HermesEventsPage.serializer(),
     )
+
+    override suspend fun ack(eventId: String): Result<Unit> = ackEvent(eventId).map { Unit }
+
+    suspend fun fetchPendingEvents(): Result<HermesEventsPage> = pending()
 
     suspend fun ackEvent(eventId: String): Result<DeviceOpsResponse> =
         postJson("api/events/${encoded(eventId)}/ack", "{}", DeviceOpsResponse.serializer())

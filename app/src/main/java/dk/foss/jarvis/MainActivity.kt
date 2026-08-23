@@ -22,6 +22,7 @@ import dk.foss.jarvis.ui.HistoryScreen
 import dk.foss.jarvis.ui.HistoryViewModel
 import dk.foss.jarvis.ui.JarvisTheme
 import dk.foss.jarvis.ui.SettingsScreen
+import dk.foss.jarvis.notifications.NotificationPermission
 
 private enum class Screen { Chat, Settings, Conversation, History }
 
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
             assistEpoch++
             showOverLockScreen()
         }
+        if (isNotificationIntent(intent)) assistEpoch++
 
         setContent {
             JarvisTheme {
@@ -67,6 +69,11 @@ class MainActivity : ComponentActivity() {
                     }
                     Screen.Settings -> {
                         BackHandler { screen = Screen.Chat }
+                        LaunchedEffect(Unit) {
+                            if (!NotificationPermission.ensure(this@MainActivity) &&
+                                android.os.Build.VERSION.SDK_INT >= 33
+                            ) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 4101)
+                        }
                         SettingsScreen(onBack = { screen = Screen.Chat })
                     }
                     Screen.Conversation -> {
@@ -99,6 +106,7 @@ class MainActivity : ComponentActivity() {
             assistEpoch++
             showOverLockScreen()
         }
+        if (isNotificationIntent(intent)) assistEpoch++
     }
 
     /** Appear over the lock screen and turn the display on (wake-word / assist launch). */
@@ -119,6 +127,10 @@ class MainActivity : ComponentActivity() {
     private fun isAssistIntent(i: Intent?): Boolean =
         i?.getBooleanExtra(EXTRA_FROM_ASSIST, false) == true ||
             i?.action == Intent.ACTION_ASSIST
+
+    private fun isNotificationIntent(i: Intent?): Boolean =
+        i?.getBooleanExtra("from_notification", false) == true &&
+            !i.getStringExtra("event_id").isNullOrBlank()
 
     companion object {
         const val EXTRA_FROM_ASSIST = "from_assist"
