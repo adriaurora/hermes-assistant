@@ -77,16 +77,6 @@ class PushGateTest {
         assertEquals(GateOutcome.NOTIFIED, gate.handlePull("e1"))
     }
 
-    @Test
-    fun `first endpoint registration is planned`() {
-        assertEquals(EndpointAction.REGISTER, planEndpoint(null, "token-1"))
-    }
-
-    @Test
-    fun `rotated endpoint is planned as update`() {
-        assertEquals(EndpointAction.UPDATE, planEndpoint("device-1", "token-2"))
-    }
-
     private fun gate(
         api: FakeEventApi,
         enabled: Boolean = true,

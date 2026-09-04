@@ -43,7 +43,7 @@ supplied separately for a deployable release.
 
 ## Registration and authenticated fetch
 
-`data/DeviceRegistryStore.kt` stores the `device_id` and `push_endpoint` as
+`data/DeviceRegistryStore.kt` stores the `device_id` and opaque FCM token as
 Keystore-encrypted secrets through `SecureStore` aliases. The API key is stored
 in the same Keystore-backed store; it is never put in DataStore, BuildConfig,
 or HTTP logs.

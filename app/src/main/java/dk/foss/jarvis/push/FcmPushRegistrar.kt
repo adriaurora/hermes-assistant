@@ -17,7 +17,7 @@ object FcmPushRegistrar {
 
     suspend fun registerToken(context: Context, token: String): Boolean =
         FcmRegistrationPolicy.shouldRegister(PushPrefs(context).isEnabled(), token) &&
-            PushIngress.onEndpoint(context, token, "fcm", "fcm")
+            PushIngress.onFcmToken(context, token)
 
     private suspend fun token(): String = suspendCancellableCoroutine { continuation ->
         FirebaseMessaging.getInstance().token

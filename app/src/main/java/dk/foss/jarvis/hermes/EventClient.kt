@@ -32,18 +32,9 @@ class EventClient(
     private val apiKey: String,
     private val deviceId: String? = null,
 ) : EventApi {
-    suspend fun registerDevice(endpoint: String, encType: String = "ntfy"): Result<DeviceRegisterResponse> = postJson(
-        "api/devices/register",
-        HermesJson.encodeToString(RegisterBody.serializer(), RegisterBody(encType, endpoint, deviceId?.takeIf { it.isNotBlank() })),
-        DeviceRegisterResponse.serializer(),
-    )
-
     suspend fun registerFcmDevice(token: String): Result<DeviceRegisterResponse> = postJson(
         "api/devices/register", fcmRegisterBody(token, deviceId?.takeIf { it.isNotBlank() }), DeviceRegisterResponse.serializer(),
     )
-
-    suspend fun updateDeviceToken(endpoint: String, encType: String = "ntfy"): Result<DeviceOpsResponse> =
-        postJson("api/devices/${requiredDeviceId()}/token", endpointBody(endpoint, encType), DeviceOpsResponse.serializer())
 
     suspend fun updateFcmToken(token: String): Result<DeviceOpsResponse> =
         postJson("api/devices/${requiredDeviceId()}/token", fcmTokenBody(token), DeviceOpsResponse.serializer())
@@ -74,9 +65,6 @@ class EventClient(
 
     suspend fun ackEvent(eventId: String): Result<DeviceOpsResponse> =
         postJson("api/events/${encoded(eventId)}/ack", "{}", DeviceOpsResponse.serializer())
-
-    private fun endpointBody(endpoint: String, encType: String): String =
-        HermesJson.encodeToString(TokenBody.serializer(), TokenBody(endpoint, encType))
 
     private fun requiredDeviceId(): String = deviceId?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("A registered device_id is required")
@@ -114,13 +102,6 @@ class EventClient(
             }
         }
     }
-
-    @Serializable private data class RegisterBody(
-        val enc_type: String,
-        val push_endpoint: String,
-        val device_id: String? = null,
-    )
-    @Serializable private data class TokenBody(val push_endpoint: String, val enc_type: String = "ntfy")
 
     companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()

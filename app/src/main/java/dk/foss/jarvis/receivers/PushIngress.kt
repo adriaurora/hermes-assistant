@@ -16,8 +16,6 @@ import dk.foss.jarvis.push.DeliveryOutcome
 import dk.foss.jarvis.push.PushDeps
 import dk.foss.jarvis.push.PushGate
 import dk.foss.jarvis.push.PushPrefs
-import dk.foss.jarvis.push.EndpointAction
-import dk.foss.jarvis.push.planEndpoint
 import kotlinx.coroutines.flow.first
 
 /** Transport-independent ingress boundary used by the native FCM service. */
@@ -55,25 +53,21 @@ object PushIngress {
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
     }
 
-    suspend fun onEndpoint(context: Context, endpoint: String, instance: String, encType: String = "ntfy"): Boolean {
+    suspend fun onFcmToken(context: Context, token: String): Boolean {
         if (!PushPrefs(context).isEnabled()) return false
         val settings = SettingsStore(context).settings.first()
         if (!settings.isConfigured) { Log.w("HermesPush", "endpoint received without Hermes configuration"); return false }
         val registry = DeviceRegistryStore(context)
         val existing = registry.load()
         val client = EventClient(settings.baseUrl, settings.apiKey, existing?.deviceId)
-        return when (planEndpoint(existing?.deviceId, endpoint)) {
-            EndpointAction.REGISTER -> {
-                (if (encType == "fcm") client.registerFcmDevice(endpoint) else client.registerDevice(endpoint, encType))
-                    .onSuccess { registry.save(it.device_id, endpoint) }
-                    .onFailure { Log.e("HermesPush", "device registration failed", it) }.isSuccess
-            }
-            EndpointAction.UPDATE, EndpointAction.UPDATE_WITH_SAME -> {
-                checkNotNull(existing)
-                (if (encType == "fcm") client.updateFcmToken(endpoint) else client.updateDeviceToken(endpoint, encType))
-                    .onSuccess { registry.save(existing.deviceId, endpoint) }
-                    .onFailure { Log.e("HermesPush", "device token update failed", it) }.isSuccess
-            }
+        return if (existing == null) {
+            client.registerFcmDevice(token)
+                .onSuccess { registry.save(it.device_id, token) }
+                .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
+        } else {
+            client.updateFcmToken(token)
+                .onSuccess { registry.save(existing.deviceId, token) }
+                .onFailure { Log.e("HermesPush", "FCM token update failed", it) }.isSuccess
         }
     }
 

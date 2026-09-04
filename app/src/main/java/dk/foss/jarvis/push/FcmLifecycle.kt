@@ -6,7 +6,7 @@ import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.EventClient
 import kotlinx.coroutines.flow.first
 
-/** Native FCM lifecycle. Deliberately has no UnifiedPush dependency or calls. */
+/** Native FCM registration lifecycle. */
 object FcmLifecycle {
     suspend fun enable(context: Context) {
         val prefs = PushPrefs(context)
