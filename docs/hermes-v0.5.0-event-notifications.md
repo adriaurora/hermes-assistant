@@ -18,32 +18,28 @@ event database or poller.
 
 Hermes owns a durable device-event inbox. The server publishes a wake signal
 containing only `{"event_id": "..."}`; the phone receives that signal through
-UnifiedPush (UP), then the Android event path fetches the event from Hermes and
+Firebase Cloud Messaging (FCM), then the Android event path fetches the event from Hermes and
 materializes one native notification. `hermes/EventClient.kt` is the authenticated
 REST boundary for registration, event fetch, pending events, and acknowledgement.
 
 Android never polls on a timer. A push wake calls the ingress boundary in
 `receivers/PushIngress.kt`; connectivity/app-start recovery calls
-`EventDispatcher.onPendingSync()` for the server's pending page. The current
-code deliberately keeps the transport independent of an SDK: the UP/ntfy
-distributor integration invokes this boundary and supplies the intent.
+`EventDispatcher.onPendingSync()` for the server's pending page. The native FCM service enqueues a connectivity-constrained WorkManager job; the
+job invokes this boundary and supplies the event ID.
 
 ## Push transport and privacy
 
-The chosen transport is **UnifiedPush with a self-hosted ntfy endpoint**:
+The chosen transport is **native Firebase Cloud Messaging (FCM)**:
 
-1. Hermes publishes `{"event_id": "..."}` to ntfy.
-2. A UP distributor app installed on the phone (for example, the ntfy app)
-   delivers the wake intent to Hermes Assistant.
-3. Hermes Assistant uses its existing authenticated Hermes API connection to
-   fetch the event, rather than trusting the push payload.
+1. Hermes publishes a data-only message containing only `{"event_id": "..."}`
+   to the registered FCM token.
+2. `FcmMessagingService` validates the event ID and schedules WorkManager.
+3. The worker fetches the event over the authenticated Hermes API; notification
+   title and body never travel through FCM.
 
-The ntfy/UP path sees only the opaque event ID. Reminder title and body never
-travel through push, and the app puts no conversation content in the push
-channel. This also avoids FCM: the repository invariant is no third-party
-network service beyond the user-configured Hermes URL; FCM additionally brings
-GMS dependency and message-deprioritization risk. FCM was considered
-historically, but is not the selected mechanism.
+FCM is a wake transport only. No `google-services.json`, credentials, or secrets
+are committed; the app expects the normal build-time Firebase configuration to be
+supplied separately for a deployable release.
 
 ## Registration and authenticated fetch
 
@@ -55,9 +51,9 @@ or HTTP logs.
 `hermes/EventClient.kt` uses the configured Hermes base URL and the existing
 Bearer credential:
 
-- `POST /api/devices/register` with `enc_type: "ntfy"` and `push_endpoint`;
+- `POST /api/devices/register` with `push_type: "fcm"` and `push_token`;
 - save the returned `device_id` together with the endpoint;
-- when the endpoint/token changes, `POST /api/devices/{device_id}/token`;
+- when the token changes, `POST /api/devices/{device_id}/token` with `push_type: "fcm"` and `push_token`;
 - fetch with `GET /api/events/{event_id}`;
 - acknowledge with `POST /api/events/{event_id}/ack`;
 - recover pending work with `GET /api/events?status=pending&device_id=...`.
@@ -106,18 +102,19 @@ Expected cases:
 
 ## Deployment checklist
 
-- Install and configure a UP distributor app on the phone (for example ntfy);
-  without a distributor there is no push wake path.
-- Provide a reachable self-hosted ntfy endpoint and the Hermes-side ntfy
-  broadcast sender that publishes event IDs.
-- Register the phone's endpoint with Hermes and retain the returned device ID
-  in `DeviceRegistryStore`.
-- Configure the Hermes base URL reachable from the phone (including the
-  WireGuard/private route as applicable) and reuse the existing Hermes Bearer
-  API key.
-- Grant Android 13+ notification permission. The channel is created lazily by
-  `ensureReminderChannel`; permission is requested by app UI, not by the
-  notification builder.
+- Provide Firebase project configuration out of band (the Android
+  `google-services.json` is intentionally not in this repository).
+- Implement the Hermes backend registration contract above and publish
+  data-only FCM messages containing an opaque `event_id`.
+- Configure the Hermes base URL reachable from the phone and reuse the existing
+  Hermes Bearer API key.
+- Grant Android 13+ notification permission.
+
+The `_remote_*` Python scripts found in the recovery source are operator-side
+experiments, not Android build inputs and are not part of this repository's
+executable backend. They were not deployed by this change. A backend deployment
+must provide FCM credentials, token registration/revocation, event fetch/ACK, and
+server-side retry/durability independently of this Android project.
 
 ## Future event types
 
