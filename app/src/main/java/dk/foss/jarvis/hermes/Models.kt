@@ -73,10 +73,30 @@ data class HermesEvent(
     val session_id: String? = null,
     val title: String? = null,
     val body: String? = null,
+    @Serializable(with = EventPrioritySerializer::class)
     val priority: Int = 0,
     val status: String? = null,
     val device_id: String? = null,
 )
+
+/** Hermes sends event priority as low/normal/high; retain integer compatibility for older servers. */
+@OptIn(ExperimentalSerializationApi::class)
+internal object EventPrioritySerializer : KSerializer<Int> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("EventPriority", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): Int {
+        val element = (decoder as? JsonDecoder)?.decodeJsonElement()
+        val value = (element as? JsonPrimitive)?.content ?: decoder.decodeString()
+        return when (value.lowercase()) {
+            "low" -> 0
+            "normal" -> 1
+            "high" -> 2
+            else -> value.toIntOrNull() ?: 0
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: Int) = encoder.encodeInt(value)
+}
 
 @Serializable
 data class HermesEventsPage(val events: List<HermesEvent> = emptyList())

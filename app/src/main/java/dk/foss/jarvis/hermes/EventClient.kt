@@ -5,10 +5,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
+import java.io.IOException
+
+enum class FetchFailureKind { HTTP, SERIALIZATION, NETWORK, OTHER }
+
+class EventFetchException(
+    val kind: FetchFailureKind,
+    val statusCode: Int? = null,
+    cause: Throwable? = null,
+) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}", cause)
 
 /** REST client for Hermes device registration and durable event operations. */
 interface EventApi {
@@ -22,14 +32,33 @@ class EventClient(
     private val apiKey: String,
     private val deviceId: String? = null,
 ) : EventApi {
-    suspend fun registerDevice(endpoint: String): Result<DeviceRegisterResponse> = postJson(
+    suspend fun registerDevice(endpoint: String, encType: String = "ntfy"): Result<DeviceRegisterResponse> = postJson(
         "api/devices/register",
-        HermesJson.encodeToString(RegisterBody.serializer(), RegisterBody("ntfy", endpoint)),
+        HermesJson.encodeToString(RegisterBody.serializer(), RegisterBody(encType, endpoint, deviceId?.takeIf { it.isNotBlank() })),
         DeviceRegisterResponse.serializer(),
     )
 
-    suspend fun updateDeviceToken(endpoint: String): Result<DeviceOpsResponse> =
-        postJson("api/devices/${requiredDeviceId()}/token", endpointBody(endpoint), DeviceOpsResponse.serializer())
+    suspend fun registerFcmDevice(token: String): Result<DeviceRegisterResponse> = postJson(
+        "api/devices/register", fcmRegisterBody(token, deviceId?.takeIf { it.isNotBlank() }), DeviceRegisterResponse.serializer(),
+    )
+
+    suspend fun updateDeviceToken(endpoint: String, encType: String = "ntfy"): Result<DeviceOpsResponse> =
+        postJson("api/devices/${requiredDeviceId()}/token", endpointBody(endpoint, encType), DeviceOpsResponse.serializer())
+
+    suspend fun updateFcmToken(token: String): Result<DeviceOpsResponse> =
+        postJson("api/devices/${requiredDeviceId()}/token", fcmTokenBody(token), DeviceOpsResponse.serializer())
+
+    /** DELETE /api/devices/{device_id} — revokes the authenticated device registration. */
+    suspend fun revokeDevice(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url("$baseUrl/${deviceRevokePath(requiredDeviceId())}")
+                .addHeader("Authorization", "Bearer $apiKey").delete().build()
+            Http.base.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(200).ifBlank { response.message }}" }
+            }
+        }
+    }
 
     override suspend fun fetchEvent(eventId: String): Result<HermesEvent> = getJson(
         "api/events/${encoded(eventId)}", HermesEvent.serializer(),
@@ -46,8 +75,8 @@ class EventClient(
     suspend fun ackEvent(eventId: String): Result<DeviceOpsResponse> =
         postJson("api/events/${encoded(eventId)}/ack", "{}", DeviceOpsResponse.serializer())
 
-    private fun endpointBody(endpoint: String): String =
-        HermesJson.encodeToString(TokenBody.serializer(), TokenBody(endpoint))
+    private fun endpointBody(endpoint: String, encType: String): String =
+        HermesJson.encodeToString(TokenBody.serializer(), TokenBody(endpoint, encType))
 
     private fun requiredDeviceId(): String = deviceId?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("A registered device_id is required")
@@ -58,10 +87,18 @@ class EventClient(
                 .addHeader("Authorization", "Bearer $apiKey").get().build()
             Http.base.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
-                check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(200).ifBlank { response.message }}" }
+                if (!response.isSuccessful) throw HttpFetchFailure(response.code)
                 HermesJson.decodeFromString(serializer, text)
             }
-        }
+        }.recoverCatching { throw classifyFetchFailure(it) }
+    }
+
+    private fun classifyFetchFailure(error: Throwable): EventFetchException = when (error) {
+        is EventFetchException -> error
+        is HttpFetchFailure -> EventFetchException(FetchFailureKind.HTTP, error.statusCode, error)
+        is SerializationException -> EventFetchException(FetchFailureKind.SERIALIZATION, cause = error)
+        is IOException -> EventFetchException(FetchFailureKind.NETWORK, cause = error)
+        else -> EventFetchException(FetchFailureKind.OTHER, cause = error)
     }
 
     private suspend fun <T> postJson(path: String, body: String, serializer: KSerializer<T>): Result<T> = withContext(Dispatchers.IO) {
@@ -78,11 +115,25 @@ class EventClient(
         }
     }
 
-    @Serializable private data class RegisterBody(val enc_type: String, val push_endpoint: String)
-    @Serializable private data class TokenBody(val push_endpoint: String)
+    @Serializable private data class RegisterBody(
+        val enc_type: String,
+        val push_endpoint: String,
+        val device_id: String? = null,
+    )
+    @Serializable private data class TokenBody(val push_endpoint: String, val enc_type: String = "ntfy")
 
-    private companion object {
+    companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         fun encoded(value: String) = URLEncoder.encode(value, "UTF-8")
+        internal fun deviceRevokePath(deviceId: String) = "api/devices/${encoded(deviceId)}"
+        internal fun fcmRegisterBody(token: String, deviceId: String? = null) =
+            HermesJson.encodeToString(FcmRegisterBody.serializer(), FcmRegisterBody("fcm", token, deviceId))
+        internal fun fcmTokenBody(token: String) =
+            HermesJson.encodeToString(FcmTokenBody.serializer(), FcmTokenBody("fcm", token))
     }
+
+    @Serializable private data class FcmRegisterBody(val push_type: String, val push_token: String, val device_id: String? = null)
+    @Serializable private data class FcmTokenBody(val push_type: String, val push_token: String)
+
+    private class HttpFetchFailure(val statusCode: Int) : IOException()
 }

@@ -4,6 +4,14 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.serialization'
 }
 
+// Firebase runtime dependencies compile without project credentials. Apply the
+// processing plugin only for local/release builds that provide the ignored
+// google-services.json file; CI and unit tests must not require secrets.
+if (file('google-services.json').exists() || file('src/debug/google-services.json').exists() ||
+        file('src/release/google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+}
+
 // No secrets are compiled into this app: the Hermes base URL and API key are
 // entered in Settings at runtime; the key is Keystore-encrypted at rest.
 
@@ -43,6 +51,7 @@ android {
     }
     kotlinOptions {
         jvmTarget = '17'
+        freeCompilerArgs += ['-Xskip-metadata-version-check']
     }
     buildFeatures {
         compose true
@@ -56,6 +65,12 @@ android {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
         }
     }
+}
+
+configurations.all {
+    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22'
+    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.22'
+    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.22'
 }
 
 dependencies {
@@ -74,6 +89,9 @@ dependencies {
     implementation 'com.squareup.okhttp3:okhttp-sse:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2'
     implementation 'com.google.android.material:material:1.11.0'
+    implementation platform('com.google.firebase:firebase-bom:32.7.4')
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation 'androidx.work:work-runtime-ktx:2.9.0'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
     testImplementation 'junit:junit:4.13.2'

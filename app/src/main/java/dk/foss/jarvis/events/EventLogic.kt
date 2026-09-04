@@ -22,10 +22,15 @@ object EventMapper {
     )
 }
 
-class NotificationDeduper {
-    private val seen = HashSet<String>()
-    @Synchronized fun observe(eventId: String): Boolean = !seen.add(eventId)
+class NotificationDeduper(private val maxEntries: Int = 1024) {
+    private val seen = LinkedHashSet<String>()
+    @Synchronized fun observe(eventId: String): Boolean {
+        val duplicate = !seen.add(eventId)
+        trim()
+        return duplicate
+    }
     @Synchronized fun forget(eventId: String) { seen.remove(eventId) }
+    @Synchronized private fun trim() { while (seen.size > maxEntries) seen.iterator().apply { next(); remove() } }
 }
 
 object StableNotificationId {
