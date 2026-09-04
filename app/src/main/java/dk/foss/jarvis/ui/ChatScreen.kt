@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -602,6 +604,7 @@ private fun HelmModelRow(label: String, onClick: () -> Unit) {
 
 // ─── Model picker sheet ──────────────────────────────────────────────────────
 // design-nan.md §17: square, #16 background, hairline border, 0 radius
+// Fixed at bottom, never exceeds viewport — header always visible, list scrolls.
 
 @Composable
 private fun HelmModelSheet(
@@ -612,8 +615,10 @@ private fun HelmModelSheet(
     onPick: (ModelOption?) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Root container — pasivo, sin clickable para no interferir con children.
     Box(Modifier.fillMaxSize()) {
-        // Backdrop
+        // Backdrop sibling — fillMaxSize + scrim + clickable onDismiss.
+        // Tap outside the sheet dismisses; taps inside the sheet are consumed by the sheet.
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -621,18 +626,22 @@ private fun HelmModelSheet(
                 .clickable(onClick = onDismiss),
         ) {}
 
-        // Sheet
+        // Sheet — anchored bottom, constrained height, ime-aware, safe-area aware.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
+                .imePadding()
                 .background(HelmRaised)
                 .border(0.5.dp, HelmBorder12)
-                .padding(horizontal = 16.dp, vertical = 16.dp),
+                .navigationBarsPadding()
+                .heightIn(max = 500.dp),
         ) {
-            // Header
+            // ── Header (always visible, pinned above scrollable list) ──
             Row(
-                Modifier.fillMaxWidth(),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -645,58 +654,95 @@ private fun HelmModelSheet(
                     color = HelmAccentTx,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = onDismiss, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = HelmWhite55)
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .padding(8.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = HelmWhite55,
+                    )
                 }
             }
 
             HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
 
-            if (loading) {
-                CircularProgressIndicator(
-                    Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .padding(vertical = 16.dp)
-                        .size(26.dp),
-                    strokeWidth = 1.5.dp,
-                    color = HelmAccentTx,
-                )
-            } else {
-                error?.let { msg ->
-                    Text(
-                        msg,
-                        modifier = Modifier.fillMaxWidth(),
-                        fontFamily = RobotoSans,
-                        fontSize = 14.sp,
-                        color = Color(0xFFFF5F56),
-                    )
-                }
+            // ── Scrollable list area ──
+            val listState = rememberLazyListState()
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp),
+            ) {
+                LazyColumn(
+                    state       = listState,
+                    modifier    = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp),
+                ) {
+                    if (loading) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.padding(vertical = 24.dp).size(26.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = HelmAccentTx,
+                                )
+                            }
+                        }
+                    } else {
+                        error?.let { msg ->
+                            item {
+                                Text(
+                                    msg,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    fontFamily = RobotoSans,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFFFF5F56),
+                                )
+                            }
+                        }
 
-                ModelOptionItem(
-                    label      = "Automatic",
-                    caption    = "Let Hermes choose",
-                    selected   = selectedLabel.startsWith("Automatic"),
-                    onClick    = { onPick(null) },
-                )
-                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                        item {
+                            ModelOptionItem(
+                                label      = "Automatic",
+                                caption    = "Let Hermes choose",
+                                selected   = selectedLabel.startsWith("Automatic"),
+                                onClick    = { onPick(null) },
+                            )
+                        }
+                        item {
+                            HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                        }
 
-                if (options.isEmpty() && error == null) {
-                    Text(
-                        "No models available",
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        fontFamily = RobotoSans,
-                        fontSize = 14.sp,
-                        color = HelmWhite35,
-                    )
-                } else {
-                    for (opt in options) {
-                        ModelOptionItem(
-                            label      = opt.label,
-                            caption    = opt.providerSlug,
-                            selected   = selectedLabel == opt.label,
-                            onClick    = { onPick(opt) },
-                        )
-                        HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                        if (options.isEmpty() && error == null) {
+                            item {
+                                Text(
+                                    "No models available",
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                                    fontFamily = RobotoSans,
+                                    fontSize = 14.sp,
+                                    color = HelmWhite35,
+                                )
+                            }
+                        } else {
+                            itemsIndexed(options) { _, opt ->
+                                ModelOptionItem(
+                                    label      = opt.label,
+                                    caption    = opt.providerSlug,
+                                    selected   = selectedLabel == opt.label,
+                                    onClick    = { onPick(opt) },
+                                )
+                                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                            }
+                        }
                     }
                 }
             }
