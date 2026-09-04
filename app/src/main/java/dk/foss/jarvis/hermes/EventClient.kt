@@ -51,15 +51,15 @@ class EventClient(
         }
     }
 
-    override suspend fun fetchEvent(eventId: String): Result<HermesEvent> = getJson(
-        "api/events/${encoded(eventId)}", HermesEvent.serializer(),
+    override suspend fun fetchEvent(id: String): Result<HermesEvent> = getJson(
+        "api/events/${encoded(id)}", HermesEvent.serializer(),
     )
 
     override suspend fun pending(): Result<HermesEventsPage> = getJson(
         "api/events?status=pending&device_id=${encoded(requiredDeviceId())}", HermesEventsPage.serializer(),
     )
 
-    override suspend fun ack(eventId: String): Result<Unit> = ackEvent(eventId).map { Unit }
+    override suspend fun ack(id: String): Result<Unit> = ackEvent(id).map { Unit }
 
     suspend fun fetchPendingEvents(): Result<HermesEventsPage> = pending()
 

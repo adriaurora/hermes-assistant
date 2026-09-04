@@ -31,6 +31,7 @@ data class ChatRequest(
 )
 
 /** Shared wire format: unknown fields tolerated, nulls omitted from output. */
+@OptIn(ExperimentalSerializationApi::class)
 val HermesJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true

@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.first
 /** Transport-independent ingress boundary used by the native FCM service. */
 object PushIngress {
     private val deduper = NotificationDeduper()
-    private fun deps(context: Context, settings: dk.foss.jarvis.data.JarvisSettings, device: dk.foss.jarvis.data.DeviceRegistration?, notify: (dk.foss.jarvis.events.HermesEventEnvelope, Int) -> DeliveryOutcome): PushDeps =
+    private fun deps(settings: dk.foss.jarvis.data.JarvisSettings, device: dk.foss.jarvis.data.DeviceRegistration?, notify: (dk.foss.jarvis.events.HermesEventEnvelope, Int) -> DeliveryOutcome): PushDeps =
         PushDeps(settings.isConfigured, device?.deviceId, EventClient(settings.baseUrl, settings.apiKey, device?.deviceId), deduper, notify)
 
     suspend fun ingestEvent(context: Context, eventId: String): Boolean =
@@ -34,7 +34,7 @@ object PushIngress {
         if (!prefs.isEnabled()) return GateOutcome.DISABLED
         if (!settings.isConfigured) return GateOutcome.DISABLED
         if (device == null) { Log.w("HermesPush", "push received without device registration"); return GateOutcome.NO_DEVICE }
-        val gate = PushGate(deps(context, settings, device) { envelope, id ->
+        val gate = PushGate(deps(settings, device) { envelope, id ->
             if (!NotificationPermission.ensure(context)) DeliveryOutcome.PERMISSION_DENIED
             else runCatching { postReminderNotification(context, envelope, id) }
                 .fold({ DeliveryOutcome.SUCCESS }, { DeliveryOutcome.POST_FAILURE })
