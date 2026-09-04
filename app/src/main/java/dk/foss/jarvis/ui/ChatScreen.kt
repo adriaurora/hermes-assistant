@@ -12,10 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,10 +26,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -83,6 +82,7 @@ fun ChatScreen(
     var input by remember { mutableStateOf("") }
     val messages = vm.messages
     val streaming by vm.isStreaming
+    var menuOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
@@ -97,11 +97,9 @@ fun ChatScreen(
                 containerColor = HelmCanvas,
                 topBar = {
                     HelmTopBar(
-                        modelLabel     = vm.modelLabel.value,
-                        onNewClick     = { vm.newConversation() },
-                        onHistoryClick = onOpenHistory,
-                        onVoiceClick   = onOpenVoice,
-                        onSettingsClick = onOpenSettings,
+                        modelLabel = vm.modelLabel.value,
+                        onNewClick = { vm.newConversation() },
+                        onMenuToggle = { menuOpen = !menuOpen },
                     )
                 },
             ) { padding ->
@@ -126,6 +124,19 @@ fun ChatScreen(
                 )
             }
 
+            // ── Full-screen menu ──
+            if (menuOpen) {
+                BackHandler { menuOpen = false }
+                Box(Modifier.fillMaxSize()) {
+                    HelmMenuScreen(
+                        onBack = { menuOpen = false },
+                        onOpenVoice = { onOpenVoice(); menuOpen = false },
+                        onOpenHistory = { onOpenHistory(); menuOpen = false },
+                        onOpenSettings = { onOpenSettings(); menuOpen = false },
+                    )
+                }
+            }
+
             if (vm.modelPickerOpen.value) {
                 HelmModelSheet(
                     options       = vm.modelOptions.value,
@@ -140,17 +151,111 @@ fun ChatScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HelmMenuScreen(
+    onBack: () -> Unit,
+    onOpenVoice: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Scaffold(
+        modifier = Modifier.fillMaxSize().background(HelmCanvas),
+        containerColor = HelmCanvas,
+        topBar = {
+            Column {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "// MENU",
+                            fontFamily = RobotoMono,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            letterSpacing = 0.1.sp,
+                            color = HelmAccentTx,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = HelmWhite55,
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = HelmCanvas,
+                        titleContentColor = HelmAccentTx,
+                        navigationIconContentColor = HelmWhite55,
+                    ),
+                )
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+            }
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                HelmMenuRow("voice", onOpenVoice)
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                HelmMenuRow("history", onOpenHistory)
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                HelmMenuRow("settings", onOpenSettings)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelmMenuRow(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 68.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontFamily = RobotoMono,
+            fontWeight = FontWeight.Medium,
+            fontSize = 20.sp,
+            color = HelmWhite55,
+        )
+        Text(
+            "→",
+            fontFamily = RobotoMono,
+            fontSize = 20.sp,
+            color = HelmAccentTx,
+            modifier = Modifier.align(Alignment.CenterEnd),
+        )
+    }
+}
+
 // ─── Top app bar ─────────────────────────────────────────────────────────────
 // Flat, #0A background, hairline bottom.  Title "Hermes" + model-id mono.
+// Solo + (nueva conversación) visible en actions; el logo abre el menú.
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HelmTopBar(
     modelLabel: String,
     onNewClick: () -> Unit,
-    onHistoryClick: () -> Unit,
-    onVoiceClick: () -> Unit,
-    onSettingsClick: () -> Unit,
+    onMenuToggle: () -> Unit,
 ) {
     Column {
         TopAppBar(
@@ -161,11 +266,18 @@ private fun HelmTopBar(
                         .fillMaxWidth()
                         .padding(start = 8.dp),
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_launcher_foreground),
-                        contentDescription = "Hermes",
-                        modifier = Modifier.size(32.dp),
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clickable(onClick = onMenuToggle),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            contentDescription = "Open menu",
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
                     Column(Modifier.padding(start = 8.dp)) {
                         Text(
                             "Hermes",
@@ -187,17 +299,15 @@ private fun HelmTopBar(
                 }
             },
             actions = {
-                IconButton(onClick = onVoiceClick, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.Default.Mic, contentDescription = "Voice conversation", tint = HelmWhite55)
-                }
-                IconButton(onClick = onHistoryClick, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.Default.History, contentDescription = "History", tint = HelmWhite55)
-                }
-                IconButton(onClick = onNewClick, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.Default.Add, contentDescription = "New conversation", tint = HelmWhite55)
-                }
-                IconButton(onClick = onSettingsClick, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = HelmWhite55)
+                IconButton(
+                    onClick = onNewClick,
+                    modifier = Modifier.padding(4.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "New conversation",
+                        tint = HelmWhite55,
+                    )
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
