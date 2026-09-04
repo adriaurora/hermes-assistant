@@ -2,12 +2,14 @@ package dk.foss.jarvis.ui
 
 import android.text.format.DateUtils
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -18,7 +20,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -28,7 +29,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,65 +41,86 @@ fun HistoryScreen(vm: HistoryViewModel, onOpen: () -> Unit, onBack: () -> Unit) 
     val items by vm.items
     val notice by vm.notice
 
-    DeepSpaceBackground(active = false) {
-        Scaffold(
-            containerColor = Color.Transparent,
+    Scaffold(
+        containerColor = JarvisColors.Canvas,
             topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            "History",
-                            fontFamily = SpaceGrotesk,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = JarvisColors.Cyan,
+                Column {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                "// HISTORY",
+                                fontFamily = JetBrainsMono,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.sp,
+                                letterSpacing = 1.2.sp,
+                                color = JarvisColors.AccentText,
                             )
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { vm.startNew(onOpen) }) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "New conversation",
-                                tint = JarvisColors.Cyan,
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
-                        titleContentColor = JarvisColors.TextPrimary,
-                    ),
-                )
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = onBack) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = JarvisColors.TextSecondary,
+                                )
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = { vm.startNew(onOpen) }) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "New conversation",
+                                    tint = JarvisColors.TextPrimary,
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = JarvisColors.Canvas,
+                            titleContentColor = JarvisColors.TextPrimary,
+                            navigationIconContentColor = JarvisColors.TextSecondary,
+                            actionIconContentColor = JarvisColors.TextPrimary,
+                        ),
+                    )
+                    HorizontalDivider(
+                        color = JarvisColors.BorderSubtle,
+                        thickness = 0.5.dp,
+                    )
+                }
             },
         ) { padding ->
             Column(Modifier.padding(padding).fillMaxSize()) {
+                Text(
+                    "// CONVERSATIONS",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    fontFamily = JetBrainsMono,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                    letterSpacing = 1.2.sp,
+                    color = JarvisColors.AccentText,
+                )
                 if (notice != null) {
                     Text(
                         notice.orEmpty(),
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                        fontFamily = DmSans,
+                        fontFamily = RobotoSans,
                         fontSize = 12.sp,
-                        color = JarvisColors.Muted,
+                        color = JarvisColors.TextSecondary,
                     )
                 }
                 if (items.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text(
                             "No conversations yet",
-                            fontFamily = SpaceGrotesk,
+                            fontFamily = RobotoSans,
                             fontWeight = FontWeight.Medium,
                             fontSize = 16.sp,
-                            color = JarvisColors.Muted,
+                            color = JarvisColors.TextSecondary,
                         )
                     }
                 } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                    ) {
                         items(items, key = { it.key }) { entry ->
                             Row2(
                                 title = entry.title,
@@ -123,13 +144,15 @@ fun HistoryScreen(vm: HistoryViewModel, onOpen: () -> Unit, onBack: () -> Unit) 
                                 },
                                 onDelete = { vm.delete(entry.localId!!) },
                             )
-                            HorizontalDivider(color = JarvisColors.Cyan.copy(alpha = 0.08f))
+                            HorizontalDivider(
+                                color = JarvisColors.BorderSubtle,
+                                thickness = 0.5.dp,
+                            )
                         }
                     }
                 }
             }
         }
-    }
 }
 
 @Composable
@@ -140,38 +163,43 @@ private fun Row2(
     onDelete: () -> Unit,
     deletable: Boolean = true,
 ) {
-    androidx.compose.foundation.layout.Row(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 52.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 text = title.ifBlank { "Conversation" },
-                fontFamily = SpaceGrotesk,
+                fontFamily = RobotoSans,
                 fontWeight = FontWeight.Medium,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 color = JarvisColors.TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = subtitle,
-                fontFamily = DmSans,
+                fontFamily = JetBrainsMono,
                 fontWeight = FontWeight.Normal,
                 fontSize = 12.sp,
-                color = JarvisColors.Muted,
+                color = JarvisColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         if (deletable) {
-            IconButton(onClick = onDelete) {
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(48.dp),
+            ) {
                 Icon(
                     Icons.Default.DeleteOutline,
                     contentDescription = "Delete",
-                    tint = JarvisColors.Muted,
+                    tint = JarvisColors.TextTertiary,
                 )
             }
         }

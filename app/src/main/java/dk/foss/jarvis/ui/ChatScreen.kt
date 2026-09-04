@@ -3,6 +3,7 @@ package dk.foss.jarvis.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,32 +14,27 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -50,14 +46,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dk.foss.jarvis.data.UiMessage
+import dk.foss.jarvis.R
+
+// ─── Helmcode color tokens ───────────────────────────────────────────────────
+
+private val HelmCanvas   = Color(0xFF0A0A0A)
+private val HelmSurface  = Color(0xFF111111)
+private val HelmRaised   = Color(0xFF161616)
+private val HelmAccent   = Color(0xFF4934E1)
+private val HelmAccentTx = Color(0xFF818CF8)
+private val HelmWhite100 = Color(0xFFFFFFFF)
+private val HelmWhite55  = Color(0x8CFFFFFF)
+private val HelmWhite35  = Color(0x59FFFFFF)
+private val HelmBorder12 = Color(0x1FFFFFFF)
+private val HelmBorder08 = Color(0x14FFFFFF)
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,6 +82,7 @@ fun ChatScreen(
     var input by remember { mutableStateOf("") }
     val messages = vm.messages
     val streaming by vm.isStreaming
+    var menuOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
@@ -82,284 +94,517 @@ fun ChatScreen(
     DeepSpaceBackground(active = false) {
         Box(Modifier.fillMaxSize()) {
             Scaffold(
-                containerColor = Color.Transparent,
+                containerColor = HelmCanvas,
                 topBar = {
-                    TopAppBar(
-                        title = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                JarvisMark()
-                                Text(
-                                    "Hermes Assistant",
-                                    fontFamily = SpaceGrotesk,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(start = 10.dp),
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent,
-                            titleContentColor = JarvisColors.TextPrimary,
-                            actionIconContentColor = JarvisColors.Cyan,
-                            navigationIconContentColor = JarvisColors.Cyan,
-                        ),
-                        actions = {
-                            IconButton(onClick = onOpenVoice) {
-                                Icon(Icons.Default.Mic, contentDescription = "Voice conversation")
-                            }
-                            IconButton(onClick = onOpenHistory) {
-                                Icon(Icons.Default.History, contentDescription = "History")
-                            }
-                            IconButton(onClick = { vm.newConversation() }) {
-                                Icon(Icons.Default.Add, contentDescription = "New conversation")
-                            }
-                            IconButton(onClick = onOpenSettings) {
-                                Icon(Icons.Default.Settings, contentDescription = "Settings")
-                            }
-                        },
+                    HelmTopBar(
+                        modelLabel = vm.modelLabel.value,
+                        onNewClick = { vm.newConversation() },
+                        onMenuToggle = { menuOpen = !menuOpen },
                     )
                 },
             ) { padding ->
-                Column(
-                    Modifier
+                HelmChatContent(
+                    listState   = listState,
+                    modifier    = Modifier
                         .padding(padding)
                         .fillMaxSize()
                         .imePadding(),
-                ) {
-                    if (messages.isEmpty()) {
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                "Ask Hermes anything",
-                                fontFamily = SpaceGrotesk,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 18.sp,
-                                color = JarvisColors.Muted,
-                            )
-                        }
-                    } else {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                            contentPadding = PaddingValues(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(messages) { msg -> MessageBubble(msg) }
-                        }
-                    }
+                    messages    = messages,
+                    input       = input,
+                    onInput     = { input = it },
+                    streaming   = streaming,
+                    activity    = vm.activity.value,
+                    modelLabel  = vm.modelLabel.value,
+                    onSend      = {
+                        vm.send(input)
+                        input = ""
+                    },
+                    onStop      = { vm.cancel() },
+                    onPickModel = { vm.modelPickerOpen.value = true },
+                )
+            }
 
-                    val activity by vm.activity
-                    activity?.let { label ->
-                        Text(
-                            "\u2022 $label",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 20.dp, bottom = 4.dp),
-                            fontFamily = DmSans,
-                            fontSize = 12.sp,
-                            color = JarvisColors.Cyan,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-
-                    val modelLabel by vm.modelLabel
-                    ModelChip(
-                        label = modelLabel,
-                        onClick = { vm.modelPickerOpen.value = true },
-                        modifier = Modifier.padding(start = 20.dp, bottom = 6.dp),
-                    )
-
-                    InputBar(
-                        value = input,
-                        onValueChange = { input = it },
-                        streaming = streaming,
-                        onSend = {
-                            vm.send(input)
-                            input = ""
-                        },
-                        onStop = { vm.cancel() },
+            // ── Full-screen menu ──
+            if (menuOpen) {
+                BackHandler { menuOpen = false }
+                Box(Modifier.fillMaxSize()) {
+                    HelmMenuScreen(
+                        onBack = { menuOpen = false },
+                        onOpenVoice = { onOpenVoice(); menuOpen = false },
+                        onOpenHistory = { onOpenHistory(); menuOpen = false },
+                        onOpenSettings = { onOpenSettings(); menuOpen = false },
                     )
                 }
             }
 
             if (vm.modelPickerOpen.value) {
-                ModelPickerSheet(
-                    options = vm.modelOptions.value,
+                HelmModelSheet(
+                    options       = vm.modelOptions.value,
                     selectedLabel = vm.modelLabel.value,
-                    loading = vm.modelLoading.value,
-                    error = vm.modelError.value,
-                    onPick = { option -> vm.chooseModel(option) },
-                    onDismiss = { vm.closeModelPicker() },
+                    loading       = vm.modelLoading.value,
+                    error         = vm.modelError.value,
+                    onPick        = { option -> vm.chooseModel(option) },
+                    onDismiss     = { vm.closeModelPicker() },
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun MessageBubble(msg: UiMessage) {
-    val isUser = msg.role == "user"
-    val isError = msg.isError
-
-    val bubbleColor = when {
-        isError -> JarvisColors.ErrorOrange.copy(alpha = 0.16f)
-        isUser -> JarvisColors.Cyan.copy(alpha = 0.16f)
-        else -> JarvisColors.GlassBg
-    }
-    val borderColor = when {
-        isError -> JarvisColors.ErrorOrange.copy(alpha = 0.25f)
-        isUser -> JarvisColors.Cyan.copy(alpha = 0.25f)
-        else -> JarvisColors.GlassBorder
-    }
-    val textColor = when {
-        isError -> JarvisColors.ErrorOrange
-        isUser -> JarvisColors.TextPrimaryAlpha
-        else -> JarvisColors.TextPrimary.copy(alpha = 0.9f)
-    }
-    val shape = when {
-        isUser -> RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 6.dp)
-        else -> RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 6.dp, bottomEnd = 18.dp)
-    }
-
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-    ) {
-        Box(
-            modifier = Modifier
-                .widthIn(max = 320.dp)
-                .clip(shape)
-                .background(bubbleColor, shape)
-                .border(1.dp, borderColor, shape)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-        ) {
-            Text(
-                text = msg.text.ifEmpty { "\u2026" },
-                color = textColor,
-                fontFamily = DmSans,
-                fontWeight = FontWeight.Normal,
-                fontSize = 15.sp,
-                lineHeight = 22.sp,
-            )
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InputBar(
+private fun HelmMenuScreen(
+    onBack: () -> Unit,
+    onOpenVoice: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Scaffold(
+        modifier = Modifier.fillMaxSize().background(HelmCanvas),
+        containerColor = HelmCanvas,
+        topBar = {
+            Column {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "// MENU",
+                            fontFamily = RobotoMono,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            letterSpacing = 0.1.sp,
+                            color = HelmAccentTx,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = HelmWhite55,
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = HelmCanvas,
+                        titleContentColor = HelmAccentTx,
+                        navigationIconContentColor = HelmWhite55,
+                    ),
+                )
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+            }
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                HelmMenuRow("voice", onOpenVoice)
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                HelmMenuRow("history", onOpenHistory)
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                HelmMenuRow("settings", onOpenSettings)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelmMenuRow(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 68.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontFamily = RobotoMono,
+            fontWeight = FontWeight.Medium,
+            fontSize = 20.sp,
+            color = HelmWhite55,
+        )
+        Text(
+            "→",
+            fontFamily = RobotoMono,
+            fontSize = 20.sp,
+            color = HelmAccentTx,
+            modifier = Modifier.align(Alignment.CenterEnd),
+        )
+    }
+}
+
+// ─── Top app bar ─────────────────────────────────────────────────────────────
+// Flat, #0A background, hairline bottom.  Title "Hermes" + model-id mono.
+// Solo + (nueva conversación) visible en actions; el logo abre el menú.
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HelmTopBar(
+    modelLabel: String,
+    onNewClick: () -> Unit,
+    onMenuToggle: () -> Unit,
+) {
+    Column {
+        TopAppBar(
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clickable(onClick = onMenuToggle),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            contentDescription = "Open menu",
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text(
+                            "Hermes",
+                            fontFamily = RobotoSans,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 16.sp,
+                            color = HelmWhite100,
+                        )
+                        Text(
+                            modelLabel,
+                            fontFamily = RobotoMono,
+                            fontWeight = FontWeight.Normal,
+                            fontSize = 12.sp,
+                            color = HelmWhite55,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
+            actions = {
+                IconButton(
+                    onClick = onNewClick,
+                    modifier = Modifier.padding(4.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "New conversation",
+                        tint = HelmWhite55,
+                    )
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = HelmCanvas,
+                titleContentColor = HelmWhite100,
+                navigationIconContentColor = HelmWhite55,
+                actionIconContentColor = HelmWhite55,
+            ),
+        )
+        HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+    }
+}
+
+// ─── Main content ────────────────────────────────────────────────────────────
+
+@Composable
+private fun HelmChatContent(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier,
+    messages: List<UiMessage>,
+    input: String,
+    onInput: (String) -> Unit,
+    streaming: Boolean,
+    activity: String?,
+    modelLabel: String,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onPickModel: () -> Unit,
+) {
+    Column(modifier) {
+        if (messages.isEmpty()) {
+            // ── Empty / new-chat screen ──
+            // design-nan.md §13: // HERMES eyebrow + "What do you need?"
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    "// HERMES",
+                    fontFamily = RobotoMono,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    letterSpacing = 0.1.sp,
+                    color = HelmAccentTx,
+                )
+                Text(
+                    "What do you need?",
+                    fontFamily = RobotoSans,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
+                    color = HelmWhite55,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        } else {
+            // ── Conversation list ──
+            LazyColumn(
+                state       = listState,
+                modifier    = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                itemsIndexed(messages) { _, msg -> HelmMessage(msg) }
+            }
+        }
+
+        // Activity / processing label
+        activity?.let { label ->
+            Text(
+                "● $label",
+                fontFamily = RobotoMono,
+                fontWeight = FontWeight.Normal,
+                fontSize = 12.sp,
+                color = HelmWhite55,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+        }
+
+        // Model selector row (flat, technical)
+        HelmModelRow(
+            label   = modelLabel,
+            onClick = onPickModel,
+        )
+
+        // Composer
+        HelmComposer(
+            value       = input,
+            onValueChange = onInput,
+            streaming   = streaming,
+            onSend      = onSend,
+            onStop      = onStop,
+        )
+    }
+}
+
+// ─── Messages ────────────────────────────────────────────────────────────────
+// design-nan.md §14: assistant = no bubble (transparent canvas),
+//                    user = square #111 surface, hairline border
+
+@Composable
+private fun HelmMessage(msg: UiMessage) {
+    val isUser = msg.role == "user"
+    val isError = msg.isError
+
+    if (isUser) {
+        // ── User message: square #111 surface ──
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .background(HelmSurface)
+                    .border(0.5.dp, HelmBorder08)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    text = msg.text.ifEmpty { "\u2026" },
+                    fontFamily = RobotoSans,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
+                    color = HelmWhite100,
+                )
+            }
+        }
+    } else {
+        // ── Assistant: plain text on canvas ──
+        Column(modifier = Modifier.fillMaxWidth()) {
+            val color = if (isError) Color(0xFFFF5F56) else HelmWhite100.copy(alpha = 0.9f)
+            Text(
+                text = msg.text.ifEmpty { "\u2026" },
+                fontFamily = RobotoSans,
+                fontWeight = FontWeight.Normal,
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
+                color = color,
+            )
+        }
+    }
+}
+
+// ─── Composer ────────────────────────────────────────────────────────────────
+// design-nan.md §15: #11 surface, square, 52dp min-height, max 144dp,
+//                    send 40dp indigo.  Single source of truth: parent `value`.
+
+@Composable
+private fun HelmComposer(
     value: String,
     onValueChange: (String) -> Unit,
     streaming: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(99.dp)
-    Surface(
-        color = JarvisColors.GlassBg,
-        shape = shape,
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 8.dp),
     ) {
         Row(
-            Modifier
+            modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, JarvisColors.Cyan.copy(alpha = 0.2f), shape)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .defaultMinSize(minHeight = 52.dp)
+                .background(HelmSurface)
+                .border(0.5.dp, HelmBorder12),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedTextField(
-                value = value,
+            // Text field — multi-line, max 144dp ≈ 9 lines at 16dp line-height
+            val maxLines = 8  // ~144dp / 16dp line-height
+            androidx.compose.foundation.text.BasicTextField(
+                value     = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.weight(1f),
-                placeholder = {
-                    Text(
-                        "Message Hermes",
-                        fontFamily = DmSans,
-                        color = JarvisColors.Muted,
-                    )
-                },
-                maxLines = 5,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color.Transparent,
-                    unfocusedBorderColor = Color.Transparent,
-                    cursorColor = JarvisColors.Cyan,
-                    focusedTextColor = JarvisColors.TextPrimary,
-                    unfocusedTextColor = JarvisColors.TextPrimary,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontFamily = RobotoSans,
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
+                    color = HelmWhite100,
                 ),
+                maxLines = maxLines,
+                decorationBox = { inner ->
+                    if (value.isEmpty()) {
+                        Text(
+                            "Message Hermes",
+                            fontFamily = RobotoSans,
+                            fontSize = 16.sp,
+                            color = HelmWhite35,
+                        )
+                    }
+                    inner()
+                },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { if (!streaming) onSend() }),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+                    if (!streaming && value.isNotBlank()) {
+                        onSend()
+                        onValueChange("")
+                    }
+                }),
             )
+
+            // Send / Stop button
             if (streaming) {
-                IconButton(onClick = onStop) {
+                IconButton(onClick = onStop, modifier = Modifier.size(44.dp)) {
                     Icon(
                         Icons.Default.Stop,
                         contentDescription = "Stop",
-                        tint = JarvisColors.Cyan,
+                        tint = HelmAccentTx,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
-            } else {
-                IconButton(onClick = onSend, enabled = value.isNotBlank()) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (value.isNotBlank()) JarvisColors.Cyan else JarvisColors.Muted,
-                    )
-                }
-            }
-            if (streaming) {
+                // Minimal spinner in the same surface
                 CircularProgressIndicator(
-                    Modifier.padding(start = 4.dp).size(20.dp),
-                    strokeWidth = 2.dp,
-                    color = JarvisColors.Cyan,
+                    Modifier.padding(end = 4.dp).size(20.dp),
+                    strokeWidth = 1.5.dp,
+                    color = HelmAccentTx,
                 )
+            } else {
+                // Square indigo send button, 40x40 visual, 44 hit area
+                IconButton(
+                    onClick = onSend,
+                    enabled = value.isNotBlank() && !streaming,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .padding(end = 4.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(
+                                color = if (value.isNotBlank()) HelmAccent else HelmRaised,
+                                shape = RoundedCornerShape(0.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (value.isNotBlank()) HelmWhite100 else HelmWhite35,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-/** Compact, tappable indicator of the current model selection (server-authoritative). */
+// ─── Model selector row ─────────────────────────────────────────────────────
+// design-nan.md §19: flat technical row, Roboto Mono model-id
+
 @Composable
-private fun ModelChip(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(99.dp)
+private fun HelmModelRow(label: String, onClick: () -> Unit) {
     Row(
-        modifier = modifier
-            .clip(shape)
-            .background(JarvisColors.GlassBg, shape)
-            .border(1.dp, JarvisColors.CyanBorder, shape)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            fontFamily = DmSans,
-            fontWeight = FontWeight.Medium,
+            fontFamily = RobotoMono,
+            fontWeight = FontWeight.Normal,
             fontSize = 12.sp,
-            color = JarvisColors.CyanText,
+            color = HelmWhite55,
+            modifier = Modifier.weight(1f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = " ▾",
-            fontFamily = DmSans,
-            fontWeight = FontWeight.Medium,
+            text = "▾",
+            fontFamily = RobotoMono,
             fontSize = 12.sp,
-            color = JarvisColors.Muted,
+            color = HelmWhite35,
         )
     }
 }
 
-/** Bottom sheet listing Automatic plus the models Hermes advertises. */
+// ─── Model picker sheet ──────────────────────────────────────────────────────
+// design-nan.md §17: square, #16 background, hairline border, 0 radius
+
 @Composable
-private fun ModelPickerSheet(
+private fun HelmModelSheet(
     options: List<ModelOption>,
     selectedLabel: String,
     loading: Boolean,
@@ -367,128 +612,130 @@ private fun ModelPickerSheet(
     onPick: (ModelOption?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetShape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
     Box(Modifier.fillMaxSize()) {
+        // Backdrop
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f))
+                .background(Color.Black.copy(alpha = 0.55f))
                 .clickable(onClick = onDismiss),
         ) {}
+
+        // Sheet
         Column(
-            Modifier
+            modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(JarvisColors.WindowBg, sheetShape)
-                .border(1.dp, JarvisColors.GlassBorder, sheetShape)
-                .padding(horizontal = 18.dp, vertical = 16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .background(HelmRaised)
+                .border(0.5.dp, HelmBorder12)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Model",
-                fontFamily = SpaceGrotesk,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 18.sp,
-                color = JarvisColors.TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onDismiss) {
-                Icon(Icons.Default.Close, contentDescription = "Close")
-            }
-        }
-
-        if (loading) {
+            // Header
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.Center,
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Text(
+                    "// MODEL",
+                    fontFamily = RobotoMono,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    letterSpacing = 0.1.sp,
+                    color = HelmAccentTx,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.padding(4.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = HelmWhite55)
+                }
+            }
+
+            HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+
+            if (loading) {
                 CircularProgressIndicator(
-                    Modifier.size(26.dp),
-                    strokeWidth = 2.dp,
-                    color = JarvisColors.Cyan,
-                )
-            }
-        } else {
-            error?.let { msg ->
-                Text(
-                    msg,
-                    modifier = Modifier.fillMaxWidth(),
-                    fontFamily = DmSans,
-                    fontSize = 13.sp,
-                    color = JarvisColors.ErrorOrange,
-                )
-            }
-
-            ModelOptionRow(
-                label = "Automatic",
-                caption = "Let Hermes choose",
-                selected = selectedLabel.startsWith("Automatic"),
-                onClick = { onPick(null) },
-            )
-            HorizontalDivider(color = JarvisColors.Cyan.copy(alpha = 0.08f))
-
-            if (options.isEmpty() && error == null) {
-                Text(
-                    "No models available",
-                    modifier = Modifier.fillMaxWidth(),
-                    fontFamily = DmSans,
-                    fontSize = 13.sp,
-                    color = JarvisColors.Muted,
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(vertical = 16.dp)
+                        .size(26.dp),
+                    strokeWidth = 1.5.dp,
+                    color = HelmAccentTx,
                 )
             } else {
-                for (opt in options) {
-                    ModelOptionRow(
-                        label = opt.label,
-                        caption = opt.providerSlug,
-                        selected = selectedLabel == opt.label,
-                        onClick = { onPick(opt) },
+                error?.let { msg ->
+                    Text(
+                        msg,
+                        modifier = Modifier.fillMaxWidth(),
+                        fontFamily = RobotoSans,
+                        fontSize = 14.sp,
+                        color = Color(0xFFFF5F56),
                     )
-                    HorizontalDivider(color = JarvisColors.Cyan.copy(alpha = 0.08f))
+                }
+
+                ModelOptionItem(
+                    label      = "Automatic",
+                    caption    = "Let Hermes choose",
+                    selected   = selectedLabel.startsWith("Automatic"),
+                    onClick    = { onPick(null) },
+                )
+                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+
+                if (options.isEmpty() && error == null) {
+                    Text(
+                        "No models available",
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        fontFamily = RobotoSans,
+                        fontSize = 14.sp,
+                        color = HelmWhite35,
+                    )
+                } else {
+                    for (opt in options) {
+                        ModelOptionItem(
+                            label      = opt.label,
+                            caption    = opt.providerSlug,
+                            selected   = selectedLabel == opt.label,
+                            onClick    = { onPick(opt) },
+                        )
+                        HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                    }
                 }
             }
         }
     }
-    }
 }
 
 @Composable
-private fun ModelOptionRow(label: String, caption: String?, selected: Boolean, onClick: () -> Unit) {
+private fun ModelOptionItem(label: String, caption: String?, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp)
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 text = label,
-                fontFamily = DmSans,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                fontSize = 15.sp,
-                color = if (selected) JarvisColors.Cyan else JarvisColors.TextPrimary,
+                fontFamily = RobotoMono,
+                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                fontSize = 13.sp,
+                color = if (selected) HelmWhite100 else HelmWhite55,
             )
             if (!caption.isNullOrBlank()) {
                 Text(
                     text = caption,
-                    fontFamily = DmSans,
+                    fontFamily = RobotoMono,
                     fontSize = 12.sp,
-                    color = JarvisColors.Muted,
+                    color = HelmWhite35,
                 )
             }
         }
         if (selected) {
             Text(
                 "✓",
-                fontFamily = DmSans,
-                fontSize = 16.sp,
-                color = JarvisColors.Cyan,
+                fontFamily = RobotoMono,
+                fontSize = 14.sp,
+                color = HelmAccentTx,
                 modifier = Modifier.padding(start = 8.dp),
             )
         }

@@ -4,12 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,7 +21,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
@@ -43,11 +36,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -203,82 +191,20 @@ private fun IdleContent(hasPermission: Boolean, hint: String?, onMicTap: () -> U
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
-            StatusTag("TAP MIC TO TALK", JarvisColors.Cyan)
+                StatusTag("TAP MIC TO TALK", JarvisColors.Blue)
 
-            // Glowing mic button with pulse ring
+                BrickVisualizer(modifier = Modifier.size(200.dp), label = "Ready for voice input")
+
+            // Square control: the visualizer is the voice signal, not the button.
             Box(contentAlignment = Alignment.Center) {
-                // Single expanding pulse ring
-                val transition = rememberInfiniteTransition(label = "idlePulse")
-                val pulseScale by transition.animateFloat(
-                    initialValue = 1f,
-                    targetValue = 1.6f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2600, easing = LinearEasing),
-                    ),
-                    label = "idlePulseScale",
-                )
-                val pulseAlpha by transition.animateFloat(
-                    initialValue = 0.5f,
-                    targetValue = 0f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2600, easing = LinearEasing),
-                    ),
-                    label = "idlePulseAlpha",
-                )
                 Box(
                     modifier = Modifier
-                        .size(88.dp)
-                        .scale(pulseScale)
-                        .alpha(pulseAlpha)
-                        .border(2.dp, JarvisColors.Blue.copy(alpha = 0.5f), CircleShape),
-                )
-                // Mic button
-                Box(
-                    modifier = Modifier
-                        .size(72.dp)
-                        .drawBehind {
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        JarvisColors.Blue,
-                                        JarvisColors.Blue.copy(alpha = 0.6f),
-                                    ),
-                                ),
-                            )
-                            // Inset highlight
-                            drawCircle(
-                                color = Color.White.copy(alpha = 0.08f),
-                                radius = size.minDimension * 0.38f,
-                            )
-                        }
-                        .clip(CircleShape)
+                        .size(48.dp)
+                        .background(JarvisColors.Blue)
                         .clickable { onMicTap() },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .drawBehind {
-                                drawCircle(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            JarvisColors.Blue,
-                                            JarvisColors.Blue.copy(alpha = 0.5f),
-                                            Color.Transparent,
-                                        ),
-                                        radius = size.minDimension * 0.6f,
-                                    ),
-                                )
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = "Microphone",
-                            modifier = Modifier.size(32.dp),
-                            tint = Color.White,
-                        )
-                    }
+                    Icon(Icons.Default.Mic, contentDescription = "Microphone", modifier = Modifier.size(24.dp), tint = Color.White)
                 }
             }
 
@@ -315,31 +241,17 @@ private fun IdleContent(hasPermission: Boolean, hint: String?, onMicTap: () -> U
 
 @Composable
 private fun ListeningContent(transcript: String, onMicTap: () -> Unit) {
-    // Blinking caret
-    val transition = rememberInfiniteTransition(label = "caret")
-    val caretAlpha by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "caretBlink",
-    )
-
     Box(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            StatusTag("LISTENING", JarvisColors.Cyan)
+            StatusTag("LISTENING", JarvisColors.Blue)
 
             Spacer(Modifier.height(32.dp))
 
-            PulseRings {
-                Waveform(barCount = 18, barWidth = 4.dp, minH = 14.dp, maxH = 56.dp)
-            }
+            BrickVisualizer(modifier = Modifier.size(200.dp), label = "Listening")
 
             if (transcript.isNotEmpty()) {
                 Spacer(Modifier.height(32.dp))
@@ -358,8 +270,7 @@ private fun ListeningContent(transcript: String, onMicTap: () -> Unit) {
                         .padding(top = 4.dp)
                         .width(2.dp)
                         .height(20.sp.value.dp)
-                        .alpha(caretAlpha)
-                        .background(JarvisColors.Cyan),
+                        .background(JarvisColors.Blue),
                 )
             }
         }
@@ -380,36 +291,6 @@ private fun ThinkingContent(
     toolLabel: String?,
     onMicTap: () -> Unit,
 ) {
-    // Blinking dots
-    val transition = rememberInfiniteTransition(label = "blink")
-    val dot1 by transition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(600, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dot1",
-    )
-    val dot2 by transition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(600, delayMillis = 200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dot2",
-    )
-    val dot3 by transition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(600, delayMillis = 400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dot3",
-    )
-
     Box(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -427,7 +308,7 @@ private fun ThinkingContent(
 
             Spacer(Modifier.height(32.dp))
 
-            ThinkingOrbs()
+            BrickVisualizer(modifier = Modifier.size(160.dp), label = "Thinking")
 
             if (transcript.isNotEmpty()) {
                 Spacer(Modifier.height(24.dp))
@@ -443,19 +324,7 @@ private fun ThinkingContent(
             }
 
             Spacer(Modifier.height(16.dp))
-
-            // Three blinking dots
-            Box(
-                contentAlignment = Alignment.Center,
-            ) {
-                androidx.compose.foundation.layout.Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Box(Modifier.size(6.dp).alpha(dot1).background(JarvisColors.ThinkBlue, CircleShape))
-                    Box(Modifier.size(6.dp).alpha(dot2).background(JarvisColors.ThinkBlue, CircleShape))
-                    Box(Modifier.size(6.dp).alpha(dot3).background(JarvisColors.ThinkBlue, CircleShape))
-                }
-            }
+            Text("processing", fontFamily = RobotoMono, fontSize = 12.sp, color = JarvisColors.TextSecondary)
         }
 
         MicFab(
@@ -482,16 +351,12 @@ private fun SpeakingContent(
         ) {
             Spacer(Modifier.height(16.dp))
 
-            // Small waveform + status
-            PulseRings(
-                modifier = Modifier.size(100.dp),
-            ) {
-                Waveform(barCount = 9, barWidth = 3.dp, minH = 6.dp, maxH = 22.dp)
-            }
+            // Compact brick field + status
+            BrickVisualizer(modifier = Modifier.size(120.dp), label = "Speaking")
 
             Spacer(Modifier.height(8.dp))
 
-            StatusTag("SPEAKING", JarvisColors.Cyan)
+            StatusTag("SPEAKING", JarvisColors.Blue)
 
             Spacer(Modifier.height(16.dp))
 
@@ -513,10 +378,10 @@ private fun SpeakingContent(
                         Text(
                             text = segments[i],
                             fontFamily = SpaceGrotesk,
-                            fontWeight = if (isSpeaking) FontWeight.Bold else FontWeight.Normal,
+                             fontWeight = if (isSpeaking) FontWeight.Medium else FontWeight.Normal,
                             fontSize = if (isSpeaking) 20.sp else 16.sp,
                             textAlign = TextAlign.Center,
-                            color = if (isSpeaking) JarvisColors.Cyan else JarvisColors.TextPrimary,
+                             color = if (isSpeaking) JarvisColors.CyanText else JarvisColors.TextPrimary,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -554,27 +419,15 @@ private fun MicFab(onMicTap: () -> Unit, modifier: Modifier = Modifier) {
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .drawBehind {
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                JarvisColors.Blue.copy(alpha = 0.7f),
-                                JarvisColors.Blue.copy(alpha = 0.3f),
-                                Color.Transparent,
-                            ),
-                        ),
-                    )
-                }
-                .clip(CircleShape)
-                .background(JarvisColors.Blue.copy(alpha = 0.8f))
+                .size(48.dp)
+                .background(JarvisColors.Blue)
                 .clickable { onMicTap() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Default.Mic,
                 contentDescription = "Microphone",
-                modifier = Modifier.size(32.dp),
+                modifier = Modifier.size(24.dp),
                 tint = Color.White,
             )
         }
@@ -601,45 +454,10 @@ private fun ErrorLayout(
                 modifier = Modifier.size(100.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                // Error scrim glow
-                Box(
-                    modifier = Modifier
-                        .size(100.dp)
-                        .drawBehind {
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        JarvisColors.ErrorOrange.copy(alpha = 0.14f),
-                                        Color.Transparent,
-                                    ),
-                                ),
-                            )
-                        },
-                )
-                // Orange ring
-                val transition = rememberInfiniteTransition(label = "errorPulse")
-                val ringScale by transition.animateFloat(
-                    initialValue = 0.8f,
-                    targetValue = 1.3f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2600, easing = LinearEasing),
-                    ),
-                    label = "errorRingScale",
-                )
-                val ringAlpha by transition.animateFloat(
-                    initialValue = 0.6f,
-                    targetValue = 0f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2600, easing = LinearEasing),
-                    ),
-                    label = "errorRingAlpha",
-                )
                 Box(
                     modifier = Modifier
                         .size(80.dp)
-                        .scale(ringScale)
-                        .alpha(ringAlpha)
-                        .border(2.dp, JarvisColors.ErrorOrange.copy(alpha = 0.5f), CircleShape),
+                        .border(.5.dp, JarvisColors.ErrorOrange),
                 )
                 // Server-off glyph (simplified)
                 Text(
@@ -652,7 +470,7 @@ private fun ErrorLayout(
             Text(
                 text = "Can't reach Hermes",
                 fontFamily = SpaceGrotesk,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Medium,
                 fontSize = 21.sp,
                 color = JarvisColors.ErrorOrange,
             )

@@ -12,9 +12,13 @@ local.properties
 *.keystore
 secrets.properties
 keys.properties
+app/src/debug/google-services.json
+app/src/release/google-services.json
 
 # Multi-model review artifacts
 .aidelegate/
 
 # Local agent/editor tooling
 opencode.json
+# Local Pi runtime state
+.atl/
