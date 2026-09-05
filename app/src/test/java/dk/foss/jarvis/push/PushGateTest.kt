@@ -13,42 +13,42 @@ import org.junit.Test
 class PushGateTest {
     @Test
     fun `registered event is mapped notified and acknowledged once`() = runBlocking {
-        val api = FakeEventApi(Result.success(event("e1")))
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
         val envelopes = mutableListOf<HermesEventEnvelope>()
-        val outcome = gate(api) { envelope, _ -> envelopes += envelope; true }.handlePull("e1")
+        val outcome = gate(api) { envelope, _ -> envelopes += envelope; true }.handlePull("123e4567-e89b-12d3-a456-426614174000")
 
         assertEquals(GateOutcome.NOTIFIED, outcome)
-        assertEquals(listOf("e1"), api.fetched)
-        assertEquals(listOf("e1"), api.acked)
-        assertEquals(HermesEventEnvelope("e1", "Title", "Body", "session-1", 2, 2.0), envelopes.single())
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.fetched)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+        assertEquals(HermesEventEnvelope("123e4567-e89b-12d3-a456-426614174000", "Title", "Body", "session-1", 2, 2.0), envelopes.single())
     }
 
     @Test
     fun `duplicate push fetches notifies and acknowledges only once`() = runBlocking {
-        val api = FakeEventApi(Result.success(event("e1")))
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
         var notified = 0
         val gate = gate(api) { _, _ -> notified++; true }
 
-        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("e1"))
-        assertEquals(GateOutcome.DEDUPED, gate.handlePull("e1"))
-        assertEquals(listOf("e1"), api.fetched)
+        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(GateOutcome.DEDUPED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.fetched)
         assertEquals(1, notified)
-        assertEquals(listOf("e1"), api.acked)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
     }
 
     @Test
     fun `disabled push does not fetch`() = runBlocking {
-        val api = FakeEventApi(Result.success(event("e1")))
-        val outcome = gate(api, enabled = false) { _, _ -> error("not called") }.handlePull("e1")
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        val outcome = gate(api, enabled = false) { _, _ -> error("not called") }.handlePull("123e4567-e89b-12d3-a456-426614174000")
         assertEquals(GateOutcome.DISABLED, outcome)
         assertTrue(api.fetched.isEmpty())
         assertTrue(api.acked.isEmpty())
     }
 
     @Test
-    fun `missing device does not fetch`() = runBlocking {
-        val api = FakeEventApi(Result.success(event("e1")))
-        val outcome = gate(api, deviceId = null) { _, _ -> error("not called") }.handlePull("e1")
+    fun `123e4567-e89b-12d3-a456-426614174002 device does not fetch`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        val outcome = gate(api, deviceId = null) { _, _ -> error("not called") }.handlePull("123e4567-e89b-12d3-a456-426614174000")
         assertEquals(GateOutcome.NO_DEVICE, outcome)
         assertTrue(api.fetched.isEmpty())
     }
@@ -59,22 +59,45 @@ class PushGateTest {
         var notified = 0
         val gate = gate(api) { _, _ -> notified++; true }
 
-        assertEquals(GateOutcome.FETCH_FAILURE, gate.handlePull("e1"))
-        api.result = Result.success(event("e1"))
-        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("e1"))
+        assertEquals(GateOutcome.FETCH_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        api.result = Result.success(event("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
         assertEquals(1, notified)
-        assertEquals(listOf("e1"), api.acked)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
     }
 
     @Test
     fun `notification rejection is retryable and is not acknowledged`() = runBlocking {
-        val api = FakeEventApi(Result.success(event("e1")))
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
         var allowed = false
         val gate = gate(api) { _, _ -> allowed }
-        assertEquals(GateOutcome.DELIVERY_FAILURE, gate.handlePull("e1"))
+        assertEquals(GateOutcome.DELIVERY_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
         assertTrue(api.acked.isEmpty())
         allowed = true
-        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("e1"))
+        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+    }
+
+    @Test
+    fun `ack failure retries ack without posting a second notification`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        api.ackResult = Result.failure(IllegalStateException("temporary ack failure"))
+        var notified = 0
+        val gate = gate(api) { _, _ -> notified++; true }
+
+        assertEquals(GateOutcome.ACK_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        api.ackResult = Result.success(Unit)
+        assertEquals(GateOutcome.ACKED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(1, notified)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
+    fun `delivery failure never acknowledges`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        val gate = gate(api) { _, _ -> false }
+
+        assertEquals(GateOutcome.DELIVERY_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertTrue(api.acked.isEmpty())
     }
 
     private fun gate(
@@ -95,7 +118,8 @@ class PushGateTest {
 private class FakeEventApi(var result: Result<HermesEvent>) : EventApi {
     val fetched = mutableListOf<String>()
     val acked = mutableListOf<String>()
+    var ackResult: Result<Unit> = Result.success(Unit)
     override suspend fun fetchEvent(id: String): Result<HermesEvent> { fetched += id; return result }
-    override suspend fun ack(id: String): Result<Unit> { acked += id; return Result.success(Unit) }
+    override suspend fun ack(id: String): Result<Unit> { acked += id; return ackResult }
     override suspend fun pending(): Result<HermesEventsPage> = Result.success(HermesEventsPage())
 }

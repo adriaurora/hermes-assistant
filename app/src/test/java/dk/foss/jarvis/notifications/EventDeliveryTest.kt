@@ -15,74 +15,74 @@ import org.junit.Test
 class EventDeliveryTest {
     @Test
     fun `push delivery deduplicates and acknowledges once`() = runBlocking {
-        val api = FakeEventApi(events = mapOf("e1" to Result.success(event("e1"))))
+        val api = FakeEventApi(events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000"))))
         val notifications = mutableListOf<String>()
         val dispatcher = EventDispatcher(api) { envelope, _ -> notifications += envelope.eventId }
 
-        assertTrue(dispatcher.onPushWoken("e1").getOrThrow())
-        assertFalse(dispatcher.onPushWoken("e1").getOrThrow())
-        assertEquals(listOf("e1"), notifications)
-        assertEquals(listOf("e1"), api.acked)
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").getOrThrow())
+        assertFalse(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").getOrThrow())
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), notifications)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
     }
 
     @Test
     fun `fetch failure is returned and forgotten for a later retry`() = runBlocking {
         val failure = IllegalStateException("network down")
-        val api = FakeEventApi(events = mapOf("e1" to Result.failure(failure)))
+        val api = FakeEventApi(events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.failure(failure)))
         var notifications = 0
         val dispatcher = EventDispatcher(api) { _, _ -> notifications++ }
 
-        assertEquals(failure, dispatcher.onPushWoken("e1").exceptionOrNull())
+        assertEquals(failure, dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").exceptionOrNull())
         assertTrue(api.acked.isEmpty())
-        api.events["e1"] = Result.success(event("e1"))
-        assertTrue(dispatcher.onPushWoken("e1").getOrThrow())
+        api.events["123e4567-e89b-12d3-a456-426614174000"] = Result.success(event("123e4567-e89b-12d3-a456-426614174000"))
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").getOrThrow())
         assertEquals(1, notifications)
-        assertEquals(listOf("e1"), api.acked)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
     }
 
     @Test
-    fun `ack failure does not prevent successful notification`() = runBlocking {
+    fun `ack failure remains retryable without duplicate notification`() = runBlocking {
         val api = FakeEventApi(
-            events = mapOf("e1" to Result.success(event("e1"))),
+            events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000"))),
             ackResult = Result.failure(IllegalStateException("ack unavailable")),
         )
         var notifications = 0
         val dispatcher = EventDispatcher(api) { _, _ -> notifications++ }
 
-        assertTrue(dispatcher.onPushWoken("e1").getOrThrow())
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").isFailure)
         assertEquals(1, notifications)
-        assertEquals(listOf("e1"), api.acked)
-        assertFalse(dispatcher.onPushWoken("e1").getOrThrow())
-        assertEquals(listOf("e1"), api.acked)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174000").isFailure)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174000"), api.acked)
     }
 
     @Test
     fun `unknown event is retryable after failed fetch`() = runBlocking {
-        val api = FakeEventApi(events = mutableMapOf("missing" to Result.failure(Exception("HTTP 404"))))
+        val api = FakeEventApi(events = mutableMapOf("123e4567-e89b-12d3-a456-426614174002" to Result.failure(Exception("HTTP 404"))))
         val notifications = mutableListOf<String>()
         val dispatcher = EventDispatcher(api) { envelope, _ -> notifications += envelope.eventId }
 
-        assertTrue(dispatcher.onPushWoken("missing").isFailure)
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174002").isFailure)
         assertTrue(notifications.isEmpty())
         assertTrue(api.acked.isEmpty())
-        api.events["missing"] = Result.success(event("missing"))
-        assertTrue(dispatcher.onPushWoken("missing").getOrThrow())
-        assertEquals(listOf("missing"), notifications)
+        api.events["123e4567-e89b-12d3-a456-426614174002"] = Result.success(event("123e4567-e89b-12d3-a456-426614174002"))
+        assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174002").getOrThrow())
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174002"), notifications)
     }
 
     @Test
     fun `pending sync delivers each event once`() = runBlocking {
         val api = FakeEventApi(
-            events = mapOf("e1" to Result.success(event("e1")), "e2" to Result.success(event("e2"))),
-            pendingResult = Result.success(HermesEventsPage(listOf(event("e1"), event("e2")))),
+            events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000")), "123e4567-e89b-12d3-a456-426614174001" to Result.success(event("123e4567-e89b-12d3-a456-426614174001"))),
+            pendingResult = Result.success(HermesEventsPage(listOf(event("123e4567-e89b-12d3-a456-426614174000"), event("123e4567-e89b-12d3-a456-426614174001")))),
         )
         val notifications = mutableListOf<String>()
         val dispatcher = EventDispatcher(api) { envelope, _ -> notifications += envelope.eventId }
 
         assertEquals(2, dispatcher.onPendingSync().getOrThrow())
         assertEquals(0, dispatcher.onPendingSync().getOrThrow())
-        assertEquals(listOf("e1", "e2"), notifications)
-        assertEquals(listOf("e1", "e2"), api.acked)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174001"), notifications)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174001"), api.acked)
     }
 
     @Test

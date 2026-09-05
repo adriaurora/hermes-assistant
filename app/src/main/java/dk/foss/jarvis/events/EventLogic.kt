@@ -24,12 +24,16 @@ object EventMapper {
 
 class NotificationDeduper(private val maxEntries: Int = 1024) {
     private val seen = LinkedHashSet<String>()
+    private val ackPending = LinkedHashSet<String>()
     @Synchronized fun observe(eventId: String): Boolean {
         val duplicate = !seen.add(eventId)
         trim()
         return duplicate
     }
     @Synchronized fun forget(eventId: String) { seen.remove(eventId) }
+    @Synchronized fun markAckPending(eventId: String) { ackPending.add(eventId) }
+    @Synchronized fun isAckPending(eventId: String): Boolean = ackPending.contains(eventId)
+    @Synchronized fun clearAckPending(eventId: String) { ackPending.remove(eventId) }
     @Synchronized private fun trim() { while (seen.size > maxEntries) seen.iterator().apply { next(); remove() } }
 }
 

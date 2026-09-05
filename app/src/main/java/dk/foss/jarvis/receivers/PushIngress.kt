@@ -17,6 +17,12 @@ import dk.foss.jarvis.push.PushDeps
 import dk.foss.jarvis.push.PushGate
 import dk.foss.jarvis.push.PushPrefs
 import kotlinx.coroutines.flow.first
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import dk.foss.jarvis.push.FcmPendingWorker
 
 /** Transport-independent ingress boundary used by the native FCM service. */
 object PushIngress {
@@ -47,10 +53,23 @@ object PushIngress {
         val device = DeviceRegistryStore(context).load() ?: return 0
         if (!PushPrefs(context).isEnabled() || !settings.isConfigured) return 0
         var delivered = 0
-        val dispatcher = EventDispatcher(EventClient(settings.baseUrl, settings.apiKey, device.deviceId), NotificationDeduper()) { envelope, id ->
-            if (NotificationPermission.ensure(context)) { postReminderNotification(context, envelope, id); delivered++ }
+        val dispatcher = EventDispatcher(EventClient(settings.baseUrl, settings.apiKey, device.deviceId), deduper) { envelope, id ->
+            if (!NotificationPermission.ensure(context)) error("notification permission denied")
+            postReminderNotification(context, envelope, id); delivered++
         }
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
+    }
+
+    /** Same operation as ingestPending, retaining failure for a retrying worker. */
+    suspend fun syncPending(context: Context): Result<Int> {
+        val settings = SettingsStore(context).settings.first()
+        val device = DeviceRegistryStore(context).load() ?: return Result.success(0)
+        if (!PushPrefs(context).isEnabled() || !settings.isConfigured) return Result.success(0)
+        val dispatcher = EventDispatcher(EventClient(settings.baseUrl, settings.apiKey, device.deviceId), deduper) { envelope, id ->
+            if (!NotificationPermission.ensure(context)) error("notification permission denied")
+            postReminderNotification(context, envelope, id)
+        }
+        return dispatcher.onPendingSync()
     }
 
     suspend fun onFcmToken(context: Context, token: String): Boolean {
@@ -62,7 +81,15 @@ object PushIngress {
         val client = EventClient(settings.baseUrl, settings.apiKey, existing?.deviceId)
         return if (existing == null) {
             client.registerFcmDevice(token)
-                .onSuccess { registry.save(it.device_id, token) }
+                .onSuccess {
+                    registry.save(it.device_id, token)
+                    WorkManager.getInstance(context).enqueueUniqueWork(
+                        "hermes-pending-sync", ExistingWorkPolicy.KEEP,
+                        OneTimeWorkRequestBuilder<FcmPendingWorker>()
+                            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                            .build(),
+                    )
+                }
                 .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
         } else {
             client.updateFcmToken(token)

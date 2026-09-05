@@ -11,6 +11,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.io.IOException
+import dk.foss.jarvis.push.isValidHermesEventId
 
 enum class FetchFailureKind { HTTP, SERIALIZATION, NETWORK, OTHER }
 
@@ -51,9 +52,14 @@ class EventClient(
         }
     }
 
-    override suspend fun fetchEvent(id: String): Result<HermesEvent> = getJson(
-        "api/events/${encoded(id)}", HermesEvent.serializer(),
-    )
+    override suspend fun fetchEvent(id: String): Result<HermesEvent> {
+        if (!isValidHermesEventId(id)) return Result.failure(EventFetchException(FetchFailureKind.OTHER))
+        return getJson("api/events/${encoded(id)}", HermesEvent.serializer()).mapCatching {
+            if (it.event_id != id) throw EventFetchException(FetchFailureKind.SERIALIZATION,
+                cause = IllegalArgumentException("event_id does not match requested id"))
+            it
+        }
+    }
 
     override suspend fun pending(): Result<HermesEventsPage> = getJson(
         "api/events?status=pending&device_id=${encoded(requiredDeviceId())}", HermesEventsPage.serializer(),
@@ -64,7 +70,8 @@ class EventClient(
     suspend fun fetchPendingEvents(): Result<HermesEventsPage> = pending()
 
     suspend fun ackEvent(eventId: String): Result<DeviceOpsResponse> =
-        postJson("api/events/${encoded(eventId)}/ack", "{}", DeviceOpsResponse.serializer())
+        if (!isValidHermesEventId(eventId)) Result.failure(IllegalArgumentException("invalid event id"))
+        else postJson("api/events/${encoded(eventId)}/ack", "{}", DeviceOpsResponse.serializer())
 
     private fun requiredDeviceId(): String = deviceId?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("A registered device_id is required")
