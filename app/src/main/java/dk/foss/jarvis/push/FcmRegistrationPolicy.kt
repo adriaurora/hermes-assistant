@@ -1,5 +1,16 @@
 package dk.foss.jarvis.push
 
+/**
+ * Pure policy for FCM registration decisions.
+ *
+ * Registration is allowed only when:
+ * - Push is enabled
+ * - Token is present and non-blank
+ * - No revoke is pending (we are not in the process of unregistering)
+ *
+ * This policy is stateless and testable without Android.
+ */
 object FcmRegistrationPolicy {
-    fun shouldRegister(enabled: Boolean, token: String?): Boolean = enabled && !token.isNullOrBlank()
+    fun shouldRegister(enabled: Boolean, token: String?, pendingRevoke: Boolean = false): Boolean =
+        enabled && !token.isNullOrBlank() && !pendingRevoke
 }

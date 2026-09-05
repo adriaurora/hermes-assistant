@@ -23,7 +23,8 @@ class FcmMessagingService : FirebaseMessagingService() {
         )
     }
 
+    /** Token rotated by Firebase — enqueue a worker that fetches the fresh token. */
     override fun onNewToken(token: String) {
-        FcmTokenRegistration.enqueue(applicationContext, token)
+        FcmTokenRegistration.enqueueCurrent(applicationContext)
     }
 }

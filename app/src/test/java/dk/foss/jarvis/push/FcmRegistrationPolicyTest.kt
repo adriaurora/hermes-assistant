@@ -11,4 +11,26 @@ class FcmRegistrationPolicyTest {
         assertFalse(FcmRegistrationPolicy.shouldRegister(true, null))
         assertFalse(FcmRegistrationPolicy.shouldRegister(true, ""))
     }
+
+    @Test fun `pendingRevoke blocks registration`() {
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = true))
+    }
+
+    @Test fun `disabled blocks registration regardless of token`() {
+        assertFalse(FcmRegistrationPolicy.shouldRegister(false, "token", pendingRevoke = false))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(false, "token", pendingRevoke = true))
+    }
+
+    @Test fun `blank token blocks registration regardless of state`() {
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, null, pendingRevoke = true))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "", pendingRevoke = true))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "   ", pendingRevoke = true))
+    }
+
+    @Test fun `all conditions must pass`() {
+        assertTrue(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = false))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(false, "token", pendingRevoke = false))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, null, pendingRevoke = false))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = true))
+    }
 }

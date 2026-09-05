@@ -12,7 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 /**
  * Encrypts/decrypts short secrets with an AES-256-GCM key held in
- * [AndroidKeyStore]. The key never leaves the hardware-backed store; only a
+ * [AndroidKeyStore]. The key never leaves the Keystore; only a
  * base64(iv || ciphertext) blob is handed to the caller for storage.
  *
  * If the key is ever unrecoverable (e.g. a backup restored onto another

@@ -17,6 +17,7 @@ class PushPrefs(context: Context) {
         val ENABLED = booleanPreferencesKey("enabled")
         val DISTRIBUTOR = stringPreferencesKey("distributor")
         val REGISTRATION_STATE = stringPreferencesKey("registration_state")
+        val PENDING_REVOKE = booleanPreferencesKey("pending_revoke")
     }
     val enabled: Flow<Boolean> = store.data.map { it[Keys.ENABLED] ?: false }
     val distributorName: Flow<String?> = store.data.map { it[Keys.DISTRIBUTOR] }
@@ -24,12 +25,15 @@ class PushPrefs(context: Context) {
         it[Keys.REGISTRATION_STATE]?.let { value -> runCatching { FcmRegistrationState.valueOf(value) }.getOrNull() }
             ?: FcmRegistrationState.DISABLED
     }
+    val pendingRevoke: Flow<Boolean> = store.data.map { it[Keys.PENDING_REVOKE] ?: false }
     suspend fun setEnabled(value: Boolean) { store.edit { it[Keys.ENABLED] = value } }
     suspend fun enable() = setEnabled(true)
     suspend fun disable() = setEnabled(false)
     suspend fun isEnabled() = enabled.first()
     suspend fun setDistributor(name: String?) { store.edit { if (name == null) it.remove(Keys.DISTRIBUTOR) else it[Keys.DISTRIBUTOR] = name } }
     suspend fun setRegistrationState(value: FcmRegistrationState) { store.edit { it[Keys.REGISTRATION_STATE] = value.name } }
+    suspend fun setPendingRevoke(value: Boolean) = store.edit { it[Keys.PENDING_REVOKE] = value }
+    suspend fun isPendingRevoke(): Boolean = pendingRevoke.first()
 }
 
-enum class FcmRegistrationState { DISABLED, REGISTERING, ENABLED, ERROR }
+enum class FcmRegistrationState { DISABLED, REGISTERING, ENABLED, ERROR, UNREGISTERING }
