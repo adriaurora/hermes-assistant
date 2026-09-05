@@ -1,31 +1,34 @@
-# Hermes v0.5.0 event notifications
+# Hermes v0.5.0 — FCM event notifications (Android)
 
-This is the Android-side contract for durable Hermes device events. The event
-inbox and event state belong to Hermes; Android is a delivery client, not an
-event database or poller.
+Android-side contract for durable Hermes device events. The event inbox and
+event state belong to Hermes; Android is a delivery client, not an event
+database or poller.
 
 ## Contents
 
 - [Architecture](#architecture)
 - [Push transport and privacy](#push-transport-and-privacy)
+- [Build: optional FCM](#build-optional-fcm)
 - [Registration and authenticated fetch](#registration-and-authenticated-fetch)
 - [Notification, tap, and acknowledgement](#notification-tap-and-acknowledgement)
+- [Lifecycle management](#lifecycle-management)
 - [Offline and failure handling](#offline-and-failure-handling)
 - [Deployment checklist](#deployment-checklist)
 - [Future event types](#future-event-types)
 
 ## Architecture
 
-Hermes owns a durable device-event inbox. The server publishes a wake signal
-containing only `{"event_id": "..."}`; the phone receives that signal through
-Firebase Cloud Messaging (FCM), then the Android event path fetches the event from Hermes and
-materializes one native notification. `hermes/EventClient.kt` is the authenticated
-REST boundary for registration, event fetch, pending events, and acknowledgement.
+Hermes owns a durable device-event inbox. The server publishes a **data-only**
+FCM message containing only `{"event_id": "..."}`; the phone receives that
+message through Firebase Cloud Messaging, then the Android event path fetches
+the event from Hermes and materializes one native notification.
+`hermes/EventClient.kt` is the authenticated REST boundary for registration,
+event fetch, pending events, and acknowledgement.
 
-Android never polls on a timer. A push wake calls the ingress boundary in
-`receivers/PushIngress.kt`; connectivity/app-start recovery calls
-`EventDispatcher.onPendingSync()` for the server's pending page. The native FCM service enqueues a connectivity-constrained WorkManager job; the
-job invokes this boundary and supplies the event ID.
+Android never polls on a timer. A push wake calls `receivers/PushIngress.kt`.
+After a successful device registration, a one-shot, connectivity-constrained
+pending-sync worker recovers the server's pending page. The FCM service enqueues
+an event worker and supplies the event ID.
 
 ## Push transport and privacy
 
@@ -38,8 +41,19 @@ The chosen transport is **native Firebase Cloud Messaging (FCM)**:
    title and body never travel through FCM.
 
 FCM is a wake transport only. No `google-services.json`, credentials, or secrets
-are committed; the app expects the normal build-time Firebase configuration to be
-supplied separately for a deployable release.
+are committed; the app expects Firebase runtime dependencies to be provided
+out of band. See [Build: optional FCM](#build-optional-fcm).
+
+## Build: optional FCM
+
+FCM is **optional**. The app builds cleanly without any Firebase config:
+
+- When no `google-services.json` matching the app's `applicationId` is present,
+  FCM is not available — the absence is explicit in the UI, not silent.
+- When a matching config exists, the `com.google.gms.google-services` plugin
+  is applied, Firebase Messaging is linked, and push is active.
+
+Stale configs for old package names must not break credential-free builds.
 
 ## Registration and authenticated fetch
 
@@ -53,9 +67,11 @@ Bearer credential:
 
 - `POST /api/devices/register` with `push_type: "fcm"` and `push_token`;
 - save the returned `device_id` together with the endpoint;
-- when the token changes, `POST /api/devices/{device_id}/token` with `push_type: "fcm"` and `push_token`;
+- when the token changes, `POST /api/devices/{device_id}/token` with
+  `push_type: "fcm"` and `push_token`;
 - fetch with `GET /api/events/{event_id}`;
 - acknowledge with `POST /api/events/{event_id}/ack`;
+- revoke with `DELETE /api/devices/{device_id}`;
 - recover pending work with `GET /api/events?status=pending&device_id=...`.
 
 The same API key and base URL are reused for all event operations. Request
@@ -71,9 +87,11 @@ wakes address the same Android notification. Notifications do not use a
 full-screen intent or overlay.
 
 The content `PendingIntent` is immutable and opens `MainActivity` with
-`event_id`, `session_id` (when present), and notification-origin context.
+`event_id`, `session_id` (when present), and a `from_notification` flag.
 `receivers/PushIngress.kt` and `MainActivity` preserve that context so a tap
-opens Hermes Assistant in the relevant session.
+opens Hermes Assistant in the chat UI. **Taps do not auto-start voice recording**
+or launch the assist gesture; notification extras are never interpreted as an
+assistant authorization.
 
 Delivery and acknowledgement are separate. A successful authenticated fetch
 is enough to materialize the notification; `notifications/EventDelivery.kt`
@@ -81,46 +99,72 @@ then sends the best-effort ACK. A tap is not required for the ACK, and an ACK
 failure does not undo a notification that was already delivered. Hermes ACKs
 are idempotent, so retries and duplicate signals are safe.
 
+## Lifecycle management
+
+The FCM lifecycle (enable, disable, register, revoke) is serialized by a
+non-reentrant in-process `Mutex` (`FcmLifecycle.withLock`). Every operation
+re-reads `PushPrefs` state inside the lock before acting, so it self-heals
+across process death.
+
+**Enable**: set `enabled = true`, mark registration state as `REGISTERING`,
+enqueue the token worker. The worker fetches the current Firebase token and
+registers it with Hermes via HTTP.
+
+**Disable**: immediately set `enabled = false`, mark `pendingRevoke = true`,
+enqueue the revoke worker. The device registration is retained (not cleared)
+until the revoke succeeds, so concurrent/future registration attempts are
+blocked.
+
+**Revoke**: persistent WorkManager worker with exponential back-off (30 s
+initial, 5 local retries). 404 is treated as idempotent success. Once
+successful the device registry is cleared and the state becomes `DISABLED`.
+If the user re-enables while a revoke is pending, the revoke completes first,
+then a fresh registration is scheduled.
+
+**Pending retry**: after a successful registration, `FcmPendingWorker` fetches
+`GET /api/events?status=pending` and delivers any events the phone missed. It
+also retries transient sync failures; this is recovery work, not periodic polling.
+
 ## Offline and failure handling
 
-`RetryPolicy` permits at most `MAX_RETRIES = 2`; `RetryGate` applies that rule
-to a failed push fetch when connectivity returns. This is a one-off,
-connectivity-constrained retry, not periodic polling. `onPendingSync()` is the
-recovery path at connectivity/app start and processes Hermes' durable pending
-page.
+Push fetch retry uses `RetryPolicy.MAX_RETRIES = 2` (WorkManager auto-retry).
+`FcmRetryDecision` allows retry for `FETCH_FAILURE`, `DELIVERY_FAILURE`, and
+`ACK_FAILURE` while below the limit.
 
 Expected cases:
 
-- A push can arrive while WireGuard is disconnected. The authenticated fetch
-  fails without exposing content, and the constrained retry/pending sync can
-  deliver it later.
+- A push can arrive while the network is unavailable. The authenticated fetch
+  fails without exposing content, and the constrained retry or pending sync
+  can deliver it later.
 - `NotificationDeduper` suppresses a duplicate event ID in the process and
   stable notification IDs prevent duplicate native notifications.
 - An expired or unknown event (for example, a 404) is not materialized; the
   failed fetch is removed from the deduper so a later pending retry can try
   again. A successfully fetched event is ACKed idempotently.
+- A revoked but not-yet-cleared device registration is cleaned up by the
+  persistent revoke worker.
 
 ## Deployment checklist
 
-- Provide Firebase project configuration out of band (the Android
+- Provide Firebase project configuration (the Android
   `google-services.json` is intentionally not in this repository).
 - Implement the Hermes backend registration contract above and publish
   data-only FCM messages containing an opaque `event_id`.
+- The backend must expose the device-registration and event REST endpoints
+  (`/api/devices/*`, `/api/events/*`).
 - Configure the Hermes base URL reachable from the phone and reuse the existing
   Hermes Bearer API key.
-- Grant Android 13+ notification permission.
+- Grant Android 13+ notification permission (`POST_NOTIFICATIONS`).
 
-The `_remote_*` Python scripts found in the recovery source are operator-side
-experiments, not Android build inputs and are not part of this repository's
-executable backend. They were not deployed by this change. A backend deployment
-must provide FCM credentials, token registration/revocation, event fetch/ACK, and
-server-side retry/durability independently of this Android project.
+A backend deployment must provide FCM credentials, token registration/revocation,
+event fetch/ACK, and server-side retry/durability independently of this Android
+project.
 
 ## Future event types
 
 The envelope already carries `event_type`, optional `session_id`, title/body,
-priority, and expiry metadata. Agent-run completion, Bufanatic approval, Home
-Assistant events, and future reminder kinds should reuse the same Hermes device
-event inbox, opaque-ID push wake, authenticated fetch, dedupe, notification,
-and ACK path. Only event mapping/presentation and any explicit action semantics
-should vary; do not create a second Android polling or push system.
+priority, and expiry metadata. Agent-run completion, approval events, and future
+reminder kinds should reuse the same Hermes device event inbox, opaque-ID push
+wake, authenticated fetch, dedupe, notification, and ACK path. Only event
+mapping/presentation and any explicit action semantics should vary; do not
+create a second Android polling or push system.

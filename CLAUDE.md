@@ -5,17 +5,17 @@ Guidance for AI agents working in this repo. For the human-facing overview see
 
 ## What this is
 
-**Hermes Assistant** — a private Android client (Kotlin + Jetpack Compose) for a
+**Hermes Assistant** — an Android client (Kotlin + Jetpack Compose) for a
 self-hosted **Hermes** agent (`NousResearch/hermes-agent`). Forked from
-Bwarhness/jarvis-assistant (upstream remote preserved; history intact). It can
-replace Gemini as the device assistant: **long-press power/assistant → speak or
-type → Hermes answers** via streaming + Android TTS.
+Bwarhness/jarvis-assistant. It can replace Gemini as the device assistant:
+**long-press power/assistant → speak or type → Hermes answers** via streaming
++ Android TTS.
 
-There is **no wake word**, no always-on microphone, no ElevenLabs, and no
-model-provider integration. The brain is always Hermes; this app only does ears
-(STT), mouth (TTS), face (Compose UI), and OS integration (assist role). The
-only coupling to the Hermes wire protocol lives in `hermes/HermesClient.kt` +
-`hermes/Models.kt`.
+There is **no wake word**, no always-on microphone, no third-party voice
+providers. The brain is always Hermes; this app only does ears (STT), mouth
+(TTS), face (Compose UI), and OS integration (assist role). The Hermes coupling
+lives in `hermes/HermesClient.kt` + `hermes/Models.kt` (chat) and, when FCM is
+configured, in `hermes/EventClient.kt` (device registration, event fetch/ACK).
 
 Package: `dk.foss.jarvis`. Single Gradle module `:app`. No nav library, no DI
 framework, no companion server.
@@ -47,14 +47,17 @@ Verification = clean compile + tests + the running app on a device.
 - Debug builds get `applicationIdSuffix '.debug'`.
 - Release has `minifyEnabled false`; enabling R8 later needs keep rules for
   kotlinx-serialization.
+- FCM feature: compiles without project credentials when no
+  `google-services.json` matching the app's applicationId is present.
 
 ## Architecture — the listen → think → speak loop
 
 | Layer | File(s) | Role |
 |---|---|---|
-| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Only Hermes coupling: OkHttp SSE → `/v1/chat/completions`; `/v1/models` as connection test. |
+| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: OkHttp SSE → `/v1/chat/completions`; `/v1/models` as connection test. When FCM is configured, `hermes/EventClient.kt` adds device-registration and event REST endpoints. |
 | Shared HTTP | `net/Http.kt` | `Http.base` (bounded timeouts) + `Http.streaming` (`readTimeout(0)`). Reuse these; never build a new OkHttpClient. |
-| Secrets | `data/SecureStore.kt` | Bearer token encrypted with an AndroidKeyStore AES-256-GCM key; blob in private prefs. Interfaces (`AeadCipher`, `SecretBlobStore`) are injectable for JVM tests. |
+| Secrets | `data/SecureStore.kt` | AES-256-GCM key held in `AndroidKeyStore`; encrypted blob in app-private
+  SharedPreferences. Interfaces (`AeadCipher`, `SecretBlobStore`) are injectable for JVM tests. |
 | Settings | `data/SettingsStore.kt` | DataStore prefs: base URL (+ legacy-key migration into SecureStore). Model selection deliberately NOT stored — Hermes owns it. |
 | Persistence | `data/ConversationStore.kt`, `data/ConversationRepository.kt` | One JSON file per conversation under `filesDir/conversations/`; repo is the single mutation point. |
 | STT | `voice/VoiceRecognizer.kt`, `voice/SpeechInput.kt` | Android SpeechRecognizer; prefers `createOnDeviceSpeechRecognizer()` on API 31+ when available, else system recognizer (may use network provider). Single instance reused across turns. |
@@ -62,6 +65,9 @@ Verification = clean compile + tests + the running app on a device.
 | Voice loop | `ui/ConversationViewModel.kt`, `ui/SentenceSplitter.kt` | ConvState Idle→Listening→Thinking→Speaking; recognition, streaming, sentence extraction, single-flight TTS pump, turn invalidation. |
 | Assistant | `assist/JarvisInteractionService.kt`, `JarvisInteractionSessionService.kt`, `JarvisInteractionSession.kt`, `JarvisRecognitionService.kt` | Default-assistant role; long-press launches conversation mode. |
 | UI / design | `MainActivity.kt`, `ui/*Screen.kt`, `ui/Theme.kt`, `ui/JarvisDesign.kt` | Compose screens + the "Direction A" design system. |
+| Notifications | `push/FcmMessagingService.kt` | FCM `FirebaseMessagingService`; data-only wakes with `event_id` → WorkManager `FcmEventWorker`. |
+| Events | `hermes/EventClient.kt` | Authenticated REST: register/update/revoke device, fetch/ack/pending events. |
+| Delivery | `notifications/EventDelivery.kt`, `notifications/NotificationChannels.kt` | Dedup, fetch, post native notification, ACK (best-effort). |
 
 **Hermes owns model selection.** `ChatRequest.model` is nullable and OMITTED
 from the JSON body when unset (verified against hermes-agent v0.20.4:
@@ -75,7 +81,7 @@ conversation.
 
 - **Async correctness via a `turn` counter.** Capture `myTurn = turn` at the
   start of an operation; every recognizer/stream/TTS callback bails unless
-  `turn == myTurn`. Bump `turn` in `beginTurn`/`resetView`/`stopAll`/`onMicTap`.
+  `turn == myTurn`. Bump `turn` in `beginTurn/resetView/stopAll/onMicTap`.
 - **`hint` vs `error` are separate channels.** `hint` = soft/no-speech/transient
   mic hiccups on the Idle screen; `error` = hard Hermes stream failures shown by
   ErrorLayout. Never route no-speech into `error`.
@@ -99,17 +105,26 @@ conversation.
   own insets (`statusBarsPadding()`, `imePadding()`, Scaffold padding).
 - **Styling pulls from `JarvisColors` tokens + the 3 font families.** Reusable
   animated composables live in `JarvisDesign.kt`.
+- **FCM lifecycle** is managed under an in-process non-reentrant `Mutex`
+  (`FcmLifecycle.withLock`). Every operation re-reads state inside the lock
+  before acting, self-healing across process death. Revoke is a persistent
+  WorkManager worker with exponential back-off (5 local retries, then long-lived).
+  Retry for push fetch: `MAX_RETRIES = 2` with WorkManager auto-retry.
 
 ## Security invariants (do not regress)
 
-- The Hermes API key lives ONLY in `SecureStore` (Keystore-encrypted). Never in
-  DataStore plaintext, never in BuildConfig, never logged, never echoed back
-  into the Settings field (write-only input; blank save = keep existing).
+- The Hermes API key lives ONLY in `SecureStore` (AES-256-GCM key in
+  AndroidKeyStore). Never in DataStore plaintext, never in BuildConfig, never
+  logged, never echoed back into the Settings field (write-only input; blank
+  save = keep existing).
 - `android:allowBackup="false"` — keys and transcripts never leave the device.
 - Release builds deny cleartext HTTP (platform default); debug-only manifest
   override (`app/src/debug/AndroidManifest.xml`) allows LAN HTTP for dev.
-- No third-party network services beyond the user-configured Hermes URL.
+- No third-party network services beyond the user-configured Hermes URL and
+  optional Firebase (FCM) for notifications.
 - Never commit `keys.properties`, keystores, or any secret file (gitignored).
+- FCM push messages contain **only an opaque `event_id`**; content is fetched
+  from the authenticated Hermes API.
 
 ## Gotchas
 
@@ -118,6 +133,7 @@ conversation.
   breaks assistant registration.
 - **The assist session must use `startAssistantActivity()`** — plain
   `context.startActivity` gets suppressed by background-activity-launch limits.
+  Only the voice-interaction flow may display over the keyguard.
 - **Reuse one `SpeechRecognizer` instance** across turns; create/destroy churn
   triggers `ERROR_SERVER_DISCONNECTED` (code 11).
 - **`SpeechInput` privacy:** on-device recognizer when available (API 31+);
@@ -129,10 +145,12 @@ conversation.
 - **`SettingsStore` migrates legacy state on read:** old plaintext `api_key`
   moves into SecureStore and is purged; removed-feature keys (model, wake,
   eleven*) are purged too. Tests pin this behavior.
+- **Notification taps** open `MainActivity` (ordinary chat UI) with
+  `event_id`/`session_id` extras. They do **not** auto-start voice recording.
+  The assist gesture is the only entry point for voice; notification extras
+  are not trust signals.
 
 ## Config & secrets
 
 There are NO build-time secrets. Base URL and API key are entered in Settings
-at runtime. `local.properties` holds only `sdk.dir`. If a private fork remote
-exists, set it via `git remote set-url origin <url>`; sync upstream with
-`git fetch upstream && git rebase upstream/master`.
+at runtime. `local.properties` holds only `sdk.dir`.
