@@ -235,23 +235,31 @@ fun SettingsScreen(onBack: () -> Unit) {
 
                 HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
                 SectionEyebrow("NOTIFICATIONS")
-                Text(
-                    "Receive durable event reminders through Firebase Cloud Messaging. Message content is fetched from Hermes over your configured connection.",
-                    fontFamily = RobotoSans, fontSize = 14.sp, lineHeight = 20.sp, color = HelmWhite55,
-                )
-                val pushLabel = when (pushState) {
-                    FcmRegistrationState.DISABLED -> "Disabled"
-                    FcmRegistrationState.REGISTERING -> "Registering"
-                    FcmRegistrationState.ENABLED -> "Enabled"
-                    FcmRegistrationState.ERROR -> "Registration error"
-                }
-                Text(pushLabel, fontFamily = RobotoMono, fontSize = 13.sp,
-                    color = if (pushState == FcmRegistrationState.DISABLED) HelmWhite35 else HelmAccentTx)
-                if (pushState == FcmRegistrationState.DISABLED) {
-                    HelmFlatButton("Enable notifications", { scope.launch { FcmLifecycle.enable(context) } }, accent = true)
+                if (!BuildConfig.FCM_AVAILABLE) {
+                    Text(
+                        "This build lacks Firebase Cloud Messaging configuration. Push notifications are unavailable.",
+                        fontFamily = RobotoSans, fontSize = 14.sp, lineHeight = 20.sp, color = HelmWhite55,
+                    )
                 } else {
-                    HelmFlatButton("Re-register device", { FcmTokenRegistration.enqueueCurrent(context) }, accent = false)
-                    HelmFlatButton("Disable notifications", { scope.launch { FcmLifecycle.disable(context) } }, accent = false)
+                    Text(
+                        "Receive durable event reminders through Firebase Cloud Messaging. Message content is fetched from Hermes over your configured connection.",
+                        fontFamily = RobotoSans, fontSize = 14.sp, lineHeight = 20.sp, color = HelmWhite55,
+                    )
+                    val pushLabel = when (pushState) {
+                        FcmRegistrationState.DISABLED -> "Disabled"
+                        FcmRegistrationState.REGISTERING -> "Registering"
+                        FcmRegistrationState.ENABLED -> "Enabled"
+                        FcmRegistrationState.ERROR -> "Registration error"
+                        FcmRegistrationState.UNREGISTERING -> "Unregistering"
+                    }
+                    Text(pushLabel, fontFamily = RobotoMono, fontSize = 13.sp,
+                        color = if (pushState == FcmRegistrationState.DISABLED) HelmWhite35 else HelmAccentTx)
+                    if (pushState == FcmRegistrationState.DISABLED) {
+                        HelmFlatButton("Enable notifications", { scope.launch { FcmLifecycle.enable(context) } }, accent = true)
+                    } else {
+                        HelmFlatButton("Re-register device", { FcmTokenRegistration.enqueueCurrent(context) }, accent = false)
+                        HelmFlatButton("Disable notifications", { scope.launch { FcmLifecycle.disable(context) } }, accent = false)
+                    }
                 }
 
                 // ── Divider ───────────────────────────────────────────────

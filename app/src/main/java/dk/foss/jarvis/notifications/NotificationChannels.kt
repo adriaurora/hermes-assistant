@@ -27,7 +27,7 @@ fun postReminderNotification(context: Context, envelope: HermesEventEnvelope, no
     ensureReminderChannel(context)
     val intent = Intent(context, MainActivity::class.java).apply {
         action = Intent.ACTION_VIEW
-        setPackage("dk.foss.jarvis")
+        setPackage(context.packageName)
         putExtra("event_id", envelope.eventId)
         putExtra("session_id", envelope.sessionId)
         putExtra("from_notification", true)

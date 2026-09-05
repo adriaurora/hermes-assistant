@@ -4,27 +4,31 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.serialization'
 }
 
-// Firebase runtime dependencies compile without project credentials. Apply the
-// processing plugin only for local/release builds that provide the ignored
-// google-services.json file; CI and unit tests must not require secrets.
-if (file('google-services.json').exists() || file('src/debug/google-services.json').exists() ||
-        file('src/release/google-services.json').exists()) {
-    apply plugin: 'com.google.gms.google-services'
-}
-
 // No secrets are compiled into this app: the Hermes base URL and API key are
 // entered in Settings at runtime; the key is Keystore-encrypted at rest.
+// Firebase runtime dependencies compile without project credentials. Only a
+// configuration for this application identity enables the processing plugin;
+// stale configs for the old package must not break credential-free builds.
+def googleServicesFiles = [file('google-services.json'), file('src/debug/google-services.json'),
+                           file('src/release/google-services.json')]
+def fcmConfigured = googleServicesFiles.any { config ->
+    config.exists() && config.getText('UTF-8').contains('io.github.adriaurora.hermesassistant')
+}
+if (fcmConfigured) {
+    apply plugin: 'com.google.gms.google-services'
+}
 
 android {
     namespace 'dk.foss.jarvis'
     compileSdk 34
 
     defaultConfig {
-        applicationId "dk.foss.jarvis"
+        applicationId "io.github.adriaurora.hermesassistant"
         minSdk 29
         targetSdk 34
         versionCode 4
         versionName "0.3.1"
+        buildConfigField 'boolean', 'FCM_AVAILABLE', fcmConfigured ? 'true' : 'false'
         vectorDrawables {
             useSupportLibrary true
         }
