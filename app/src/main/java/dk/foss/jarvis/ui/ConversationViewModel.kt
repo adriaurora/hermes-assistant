@@ -283,8 +283,14 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         val engine = tts
         if (engine == null) { speaking = false; return }
         val myTurn = turn
+        val spoken = BoldMarkdownStripper.strip(next)
+        if (spoken.isBlank()) {
+            speaking = false
+            pump()
+            return
+        }
         engine.speak(
-            text = next,
+            text = spoken,
             onDone = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
             onError = { main.post { if (turn == myTurn) { speaking = false; pump() } } },
         )

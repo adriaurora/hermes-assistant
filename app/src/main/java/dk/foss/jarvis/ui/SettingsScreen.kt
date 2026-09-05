@@ -43,6 +43,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import dk.foss.jarvis.BuildConfig
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dk.foss.jarvis.data.SettingsStore
@@ -270,6 +272,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                     text   = "Set as default assistant",
                     onClick = { openAssistantSettings(context) },
                     accent = false,
+                )
+
+                // ── Version footer ────────────────────────────────────────
+                Text(
+                    text = "Hermes ${BuildConfig.VERSION_NAME}",
+                    fontFamily = RobotoMono,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    color = HelmWhite35,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 40.dp),
                 )
             }
         }
