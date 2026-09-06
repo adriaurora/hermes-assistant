@@ -11,4 +11,9 @@ class FcmRetryDecisionTest {
         assertFalse(FcmRetryDecision.shouldRetry(GateOutcome.DEDUPED, 0))
         assertFalse(FcmRetryDecision.shouldRetry(GateOutcome.DISABLED, 0))
     }
+
+    @Test fun `permanent fetch does not retry`() {
+        assertFalse(FcmRetryDecision.shouldRetry(GateOutcome.FETCH_PERMANENT, 0))
+        assertFalse(FcmRetryDecision.shouldRetry(GateOutcome.FETCH_PERMANENT, 5))
+    }
 }

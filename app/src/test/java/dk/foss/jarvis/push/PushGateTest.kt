@@ -3,6 +3,8 @@ package dk.foss.jarvis.push
 import dk.foss.jarvis.events.HermesEventEnvelope
 import dk.foss.jarvis.events.NotificationDeduper
 import dk.foss.jarvis.hermes.EventApi
+import dk.foss.jarvis.hermes.EventFetchException
+import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesEvent
 import dk.foss.jarvis.hermes.HermesEventsPage
 import kotlinx.coroutines.runBlocking
@@ -100,12 +102,76 @@ class PushGateTest {
         assertTrue(api.acked.isEmpty())
     }
 
+    @Test
+    fun `event_not_found fetch maps to permanent outcome`() = runBlocking {
+        val api = FakeEventApi(
+            Result.failure(EventFetchException(FetchFailureKind.HTTP, 404, rpcCode = "event_not_found")),
+        )
+        var notified = 0
+        val gate = gate(api) { _, _ -> notified++; true }
+
+        assertEquals(GateOutcome.FETCH_PERMANENT, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(0, notified)
+        // A second call should retry fetch (deduper.forget happened):
+        api.result = Result.success(event("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(GateOutcome.NOTIFIED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(1, notified)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174000"), api.fetched)
+    }
+
+    @Test
+    fun `already delivered event is acknowledged without re-notifying`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        var notified = 0
+        val gate = gate(api, wasDelivered = { true }) { _, _ -> notified++; true }
+
+        assertEquals(GateOutcome.ACKED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(0, notified)
+        assertTrue(api.fetched.isEmpty())
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
+    fun `already delivered event with failing ack yields ack failure`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        api.ackResult = Result.failure(IllegalStateException("ack unavailable"))
+        var notified = 0
+        val gate = gate(api, wasDelivered = { true }) { _, _ -> notified++; true }
+
+        assertEquals(GateOutcome.ACK_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(0, notified)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
+    fun `successful delivery records onDelivered even when ack fails`() = runBlocking {
+        val api = FakeEventApi(Result.success(event("123e4567-e89b-12d3-a456-426614174000")))
+        api.ackResult = Result.failure(IllegalStateException("ack unavailable"))
+        val deliveredIds = mutableListOf<String>()
+        val gate = gate(api, onDelivered = { deliveredIds += it }) { envelope, _ ->
+            // simulate delivery success
+            true
+        }
+
+        assertEquals(GateOutcome.ACK_FAILURE, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), deliveredIds)
+        assertEquals(1, api.acked.size)
+
+        // Fix ack and retry:
+        api.ackResult = Result.success(Unit)
+        assertEquals(GateOutcome.ACKED, gate.handlePull("123e4567-e89b-12d3-a456-426614174000"))
+        // onDelivered not called again because deduper marks ack-pending
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), deliveredIds)
+    }
+
     private fun gate(
         api: FakeEventApi,
         enabled: Boolean = true,
         deviceId: String? = "device-1",
+        wasDelivered: (String) -> Boolean = { false },
+        onDelivered: (String) -> Unit = {},
         notify: (HermesEventEnvelope, Int) -> Boolean,
-    ) = PushGate(PushDeps(enabled, deviceId, api, NotificationDeduper()) { envelope, id ->
+    ) = PushGate(PushDeps(enabled, deviceId, api, NotificationDeduper(), wasDelivered, onDelivered) { envelope, id ->
         if (notify(envelope, id)) DeliveryOutcome.SUCCESS else DeliveryOutcome.POST_FAILURE
     })
 

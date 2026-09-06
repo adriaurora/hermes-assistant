@@ -107,6 +107,68 @@ class EventDeliveryTest {
     }
 
     @Test
+    fun `pending sync acknowledges previously delivered events without notifying`() = runBlocking {
+        val api = FakeEventApi(
+            events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000"))),
+            pendingResult = Result.success(HermesEventsPage(listOf(event("123e4567-e89b-12d3-a456-426614174000")))),
+        )
+        var notifyCount = 0
+        val dispatcher = EventDispatcher(
+            client = api,
+            wasDelivered = { true },
+            onDelivered = { },
+            notify = { _, _ -> notifyCount++ },
+        )
+
+        assertEquals(0, dispatcher.onPendingSync().getOrThrow())
+        assertEquals(0, notifyCount)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
+    fun `onDelivered is recorded after successful notify`() = runBlocking {
+        val api = FakeEventApi(
+            events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000"))),
+            pendingResult = Result.success(HermesEventsPage(listOf(event("123e4567-e89b-12d3-a456-426614174000")))),
+        )
+        val deliveredIds = mutableListOf<String>()
+        val dispatcher = EventDispatcher(
+            client = api,
+            wasDelivered = { false },
+            onDelivered = { deliveredIds += it },
+            notify = { _, _ -> },
+        )
+
+        assertEquals(1, dispatcher.onPendingSync().getOrThrow())
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), deliveredIds)
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
+    fun `previously delivered event with failing ack marks ack pending`() = runBlocking {
+        val api = FakeEventApi(
+            events = mapOf("123e4567-e89b-12d3-a456-426614174000" to Result.success(event("123e4567-e89b-12d3-a456-426614174000"))),
+            pendingResult = Result.success(HermesEventsPage(listOf(event("123e4567-e89b-12d3-a456-426614174000")))),
+            ackResult = Result.failure(IllegalStateException("ack unavailable")),
+        )
+        var notifyCount = 0
+        val dispatcher = EventDispatcher(
+            client = api,
+            wasDelivered = { true },
+            onDelivered = { },
+            notify = { _, _ -> notifyCount++ },
+        )
+
+        val result = dispatcher.onPendingSync()
+        // ack failure on previously delivered event returns failure
+        assertTrue(result.isFailure)
+        // delivery was NOT attempted
+        assertEquals(0, notifyCount)
+        // ack was attempted and failed
+        assertEquals(listOf("123e4567-e89b-12d3-a456-426614174000"), api.acked)
+    }
+
+    @Test
     fun `event and pending page decode with the production HermesJson`() {
         val json = """
             {"event_id":"evt-1","event_type":"reminder","created_at":1787382860.47,
