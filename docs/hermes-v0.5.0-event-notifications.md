@@ -210,3 +210,78 @@ reminder kinds should reuse the same Hermes device event inbox, opaque-ID push
 wake, authenticated fetch, dedupe, notification, and ACK path. Only event
 mapping/presentation and any explicit action semantics should vary; do not
 create a second Android polling or push system.
+
+## Wire Protocol v1 (hermes_assistant plugin)
+
+When the auto probe detects the `hermes_assistant` plugin (HTTP 200/401 on the
+RPC endpoint instead of 404/503), Android switches from the legacy REST paths
+(`/api/devices/*`, `/api/events/*`) to the plugin's single RPC endpoint:
+
+```http
+POST {baseUrl}/api/platforms/hermes_assistant/events
+Authorization: Bearer <API_SERVER_KEY>
+Content-Type: application/json
+
+{"protocol_version":1,"type":"<op>",...}
+```
+
+Every response is an envelope:
+
+```json
+{"ok":true,"protocol_version":1,"result":{...}}
+{"ok":false,"protocol_version":1,"error":{"code":"...","message":"...","http_status":N}}
+```
+
+HTTP 200 with `ok:false` is a failure — the envelope must always be decoded.
+
+### device.register (v1)
+
+A fresh registration sends `device.register` with `label` and `push:{type:"fcm",token}`.
+The server returns `device_id`, `device_secret` (256-bit, returned **once**,
+scrypt-hashed server-side), `state:"active"`, and `existing:false`. A re-register
+with credentials is idempotent and returns `device_secret:null`, `existing:true`.
+
+When migrating a legacy row (`legacy_pending_enrollment`) to v1 the plugin accepts
+an **optional** `legacy_device_id` parameter on `device.register`. The server
+marks the imported row as `superseded` (pointing to the new device) instead of
+leaving it `legacy_pending_enrollment` orphaned. Older plugin adapters simply
+ignore the unknown field → **backwards compatible**. The Android client passes
+`legacy_device_id` only on a *fresh* register when the registry holds a LegacyPending
+or a Registered row without secret — it is never sent on idempotent re-registers
+with credentials.
+
+### Protocol selection: AUTO / LEGACY / V1
+
+`push_transport` is persisted as `AUTO`, `LEGACY`, or `V1`. In `AUTO` mode the
+client calls `probe()` (a non-mutating `events.pending` with dummy credentials)
+and selects V1 on HTTP 200/401, LEGACY on 404/503 or network failure. The probe
+is cached for 5 minutes and never triggers enrollment. Users can force a
+protocol via `push_transport` override in `PushPrefs`.
+
+### Lifecycle: clear and revoke (identical to legacy)
+
+Both protocols share the same revoke and clear semantics:
+
+- **Revoke**: `ExistingWorkPolicy.KEEP` WorkManager worker with exponential
+  back-off (30 s initial). Transient errors retry without a local cap (back-off
+  bounds cost). 404 = idempotent success. 401/403 → `CredentialRejected`: purge
+  all local copies (`device_id`, endpoint, origin, `push_api_key`, `device_secret`
+  when present) and unblock state.
+- **Clear saved key**: disables push immediately, flags `pendingCredentialClear`
+  and `pendingRevoke`, revokes the device (same KEEP worker), then purges
+  everything on success/404.
+
+### Events: get, ack, pending
+
+- **event.get**: fetches and delivers the event; side-effect marks it `delivered`.
+- **event.ack**: idempotent; already-acked events return `ok:true`.
+- **events.pending**: returns `available_at`-ordered events (up to 100) including
+  delivered-but-not-yet-acked events for FCM-loss recovery.
+
+Persistent deduplication via `DeliveredEventLog` (FIFO bounded to 128 IDs) prevents
+duplicate notifications after process death.
+
+### Reconciliation references
+
+Full reconciliation details are in [docs/fcm-v1-reconciliation/](../fcm-v1-reconciliation/).
+Protocol v1 spec is at [docs/wire-protocol-v1/](../wire-protocol-v1/).
