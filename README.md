@@ -23,7 +23,11 @@ server, no sidecar — point it at your Hermes URL + API key and go.
 - 🔔 **FCM event notifications** — Hermes sends a data-only wake with an opaque `event_id`;
   the app fetches content over the authenticated Hermes API and posts a native
   notification. Push sees only an opaque event ID, never reminder or conversation text.
-  See [docs/hermes-v0.5.0-event-notifications.md](docs/hermes-v0.5.0-event-notifications.md).
+  Supports the plugin [Wire Protocol v1](docs/wire-protocol-v1/) (RPC endpoint
+  `POST /api/platforms/hermes_assistant/events`) with automatic fallback to the
+  legacy REST paths when the plugin is absent. See
+  [docs/wire-protocol-v1/](docs/wire-protocol-v1/) and
+  [docs/fcm-v1-reconciliation/](docs/fcm-v1-reconciliation/).
 
 The **brain is always Hermes** — the app only handles the ears, mouth, face, and
 OS integration.
