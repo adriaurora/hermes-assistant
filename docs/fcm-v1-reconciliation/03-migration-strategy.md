@@ -1,5 +1,8 @@
 # Migration strategy
 
+**Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)
+**Closure date:** 2026-09-06
+
 ## 1. Git strategy
 
 Create `reconcile/fcm-hardening-wire-v1` from `feature/wire-protocol-v1`, merge
@@ -42,3 +45,16 @@ registration is blocked while either pending flag is set.
 Run both baselines (main 120 and v1 205, acknowledging ~90 overlap), all reconciliation
 tests, lint, and assemble. Inspect that no secret occurs in logs, intents, WorkManager
 Data, or UI. Only then merge; never cut over the server in this change.
+
+### 5.1 Final results (2026-09-06)
+
+All reconciliation gates are closed:
+
+- 267 JVM tests PASS (0 failures); M1–M11 (main FCM hardening) and V1–V11
+  (Wire Protocol v1) preserved and PASS.
+- `lintDebug` PASS (0 errors).
+- `assembleDebug` PASS both Firebase-free and Firebase-configured.
+- `assembleRelease` PASS and `lintVitalRelease` PASS.
+- Working tree clean; production server untouched.
+
+The resulting code is `READY_FOR_ANDROID_RC`. Server cutover remains out of scope.

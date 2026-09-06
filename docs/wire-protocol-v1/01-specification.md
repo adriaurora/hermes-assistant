@@ -1,6 +1,6 @@
 # Hermes Assistant Android — Wire Protocol v1 (plugin hermes_assistant) — Specification
 
-**Status:** IMPLEMENTED IN PROGRESS (branch `feature/wire-protocol-v1`)  
+**Status:** IMPLEMENTED (merged via `reconcile/fcm-hardening-wire-v1`; reconciliation COMPLETE)
 **Date:** 2026-09-06
 
 ## 1. Scope / Goals
@@ -148,6 +148,10 @@ BYO Firebase remains supported: `google-services.json` is variant-specific,
 and builds without it remain supported.
 
 ## Reconciliation with FCM hardening (main)
+
+Reconciliation closure (2026-09-06): COMPLETE. The Android code is
+`READY_FOR_ANDROID_RC`; all acceptance criteria below are satisfied. The server
+remains **READY_FOR_SERVER_CUTOVER** and no server cutover is performed here.
 
 This protocol specification reconciles with the FCM hardening changes on main
 (branch `reconcile/fcm-hardening-wire-v1`, design at `docs/fcm-v1-reconciliation/02-design.md`).

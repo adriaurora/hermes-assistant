@@ -1,6 +1,6 @@
 # FCM hardening × Wire Protocol v1 — Reconciliation Specification
 
-**Status:** INTEGRATION IN PROGRESS (branch `reconcile/fcm-hardening-wire-v1`)  
+**Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)
 **Date:** 2026-09-06
 
 ## 1. Objetivo y autoridad

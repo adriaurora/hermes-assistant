@@ -1,5 +1,8 @@
 # Threat model
 
+**Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)
+**Closure date:** 2026-09-06
+
 | Asset / boundary | Threat | Mitigation |
 |---|---|---|
 | `device_secret` | disclosure in storage or diagnostics | encrypted SecureStore; never logs/DataStore/WorkManager Data/intents/UI; redacted `toString` |

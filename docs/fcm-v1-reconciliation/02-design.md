@@ -1,5 +1,8 @@
 # Combined design
 
+**Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)
+**Closure date:** 2026-09-06
+
 ## 1. Máquina de estados combinada
 
 | enabled | protocol | transport (auto-resuelto) | registry (`RegistryState` + secret?) | registration_state | pendingRevoke | pendingCredentialClear | estado lógico |

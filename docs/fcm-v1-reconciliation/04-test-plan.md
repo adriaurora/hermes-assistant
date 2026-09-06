@@ -1,5 +1,8 @@
 # Reconciliation test plan
 
+**Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)
+**Closure date:** 2026-09-06
+
 The existing suites map the requested 40 cases as follows. “Exist.” means covered by the
 listed main/v1 tests; “Nuevo” identifies the reconciliation gap to create.
 
@@ -53,3 +56,12 @@ Existing inventory: main `DeviceRegistryMigrationTest` (9), `FcmRevokeCleanupTes
 `FcmPayloadParserProtocolVersionTest` (7), `V1PolicyTest` (12), `FcmLifecycleTest` (1),
 `PushGateTest` (12), `EventDeliveryTest` (11), etc. New tests above must use fake clients
 and assert no mutation, exact snapshots, durable flags, and lock serialization.
+
+## Closure
+
+Final validation on 2026-09-06: 267 JVM tests PASS (0 failures), with M1–M11
+(main FCM hardening) and V1–V11 (Wire Protocol v1) preserved and PASS;
+`lintDebug` PASS (0 errors); `assembleDebug` PASS Firebase-free and
+Firebase-configured; `assembleRelease` PASS; and `lintVitalRelease` PASS.
+The working tree is clean, the production server is untouched, and the code is
+`READY_FOR_ANDROID_RC`.
