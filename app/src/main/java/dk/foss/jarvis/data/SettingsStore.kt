@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import dk.foss.jarvis.push.FcmLifecycle
-import dk.foss.jarvis.push.FcmRegistrationState
+import dk.foss.jarvis.push.FcmConnectionEffects
 import dk.foss.jarvis.push.FcmRevokeWorker
 import dk.foss.jarvis.push.FcmTokenRegistration
 import dk.foss.jarvis.push.PushPrefs
@@ -41,22 +41,7 @@ class SettingsStore internal constructor(
     /** Android entry point: app DataStore + Keystore-backed SecureStore. */
     constructor(context: Context) : this(context.dataStore, SecureStore.get(context), { old, new ->
             val app = context.applicationContext
-            val prefs = PushPrefs(app)
-            val registry = DeviceRegistryStore(app)
-            val existing = registry.load()
-            val transition = ConnectionTransition.decide(old, new, existing)
-            if (transition.revokeRequired) {
-                // Keep the old origin/credential in the registry until DELETE
-                // succeeds; the revoke worker therefore cannot accidentally
-                // revoke against the newly selected Hermes instance.
-                prefs.setPendingRevoke(true)
-                prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING)
-                FcmRevokeWorker.schedule(app)
-                WorkManager.getInstance(app).cancelUniqueWork("hermes-fcm-token-registration")
-            } else if (existing != null && old.apiKey != new.apiKey) {
-                // A bearer-only change does not invalidate the device identity.
-                registry.updateCredentials(new.baseUrl, new.apiKey)
-            }
+            FcmConnectionEffects(PushPrefs(app), DeviceRegistryStore(app), { FcmRevokeWorker.schedule(app) }, { WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME) }).onConnectionChanged(old, new)
         }, { block -> FcmLifecycle.withLock { block() } })
 
     private object Keys {

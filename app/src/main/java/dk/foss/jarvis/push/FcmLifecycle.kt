@@ -83,7 +83,7 @@ object FcmLifecycle {
             FcmRevokeWorker.schedule(app)
             // 5. Cancel any pending registration work so it does not run while
             //    unregistering.
-            WorkManager.getInstance(app).cancelUniqueWork("hermes-fcm-token-registration")
+            WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME)
         }
     }
 }

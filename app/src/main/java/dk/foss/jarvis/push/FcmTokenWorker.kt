@@ -14,6 +14,7 @@ class FcmTokenWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val prefs = PushPrefs(app)
         if (!prefs.isEnabled()) return Result.success()
         if (prefs.isPendingRevoke()) return Result.success()
+        if (prefs.isPendingCredentialClear()) return Result.success()
 
         // Fetch token outside lock (async).  If registration is called while
         // enabled, registerCurrentToken rechecks inside its lock.
@@ -27,7 +28,7 @@ class FcmTokenWorker(context: Context, params: WorkerParameters) : CoroutineWork
             // mismatch inside the lock (e.g. disable was called).  Recheck: if
             // disabled/revoking, skip (no retry needed); otherwise retry HTTP.
             val recheckPrefs = PushPrefs(app)
-            if (recheckPrefs.isPendingRevoke() || !recheckPrefs.isEnabled()) {
+            if (recheckPrefs.isPendingRevoke() || recheckPrefs.isPendingCredentialClear() || !recheckPrefs.isEnabled()) {
                 // Skipped — state changed by disable.  No retry needed.
                 Result.success()
             } else {

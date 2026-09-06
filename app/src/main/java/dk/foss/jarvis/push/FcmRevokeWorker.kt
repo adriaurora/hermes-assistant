@@ -10,7 +10,11 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dk.foss.jarvis.data.DeviceRegistryStore
+import dk.foss.jarvis.data.RegistryState
+import dk.foss.jarvis.data.SettingsStore
+import dk.foss.jarvis.data.SecureStore
 import dk.foss.jarvis.hermes.EventClient
+import kotlinx.coroutines.flow.first
 import java.time.Duration
 
 /** WorkManager worker that revokes the device registration on the server. */
@@ -25,7 +29,7 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
          *
          * WorkManager persists and reschedules eligible work across reboot
          * on Android 10+ (API 29+, the app's minSdk).  After reboot the
-         * worker re-reads [PushPrefs.isPendingRevoke] and resumes where it
+         * worker re-reads [PushPrefs.isPendingRevoke] and credential-clear state and resumes where it
          * left off.
          *
          * NOTE: FcmLifecycle.withLock serializes this worker's state check,
@@ -58,47 +62,32 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             if (!prefs.isPendingRevoke()) return@withLockReturning Result.success()
 
             val registry = DeviceRegistryStore(app)
-            val registration = registry.load() ?: run {
-                // No registration found — nothing to revoke (already
-                // deleted by a prior successful call or process death).
-                // Clear pending so it does not terminally block future
-                // registration, then mirror the idempotent-success path
-                // above: if enabled, re-register a fresh token.
-                prefs.setPendingRevoke(false)
-                if (prefs.isEnabled()) {
-                    FcmTokenRegistration.enqueueCurrent(app)
-                    prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
-                } else {
-                    prefs.setRegistrationState(FcmRegistrationState.DISABLED)
-                }
-                return@withLockReturning Result.success()
-            }
-
-            // The registration is bound to the origin and credential that created
-            // it. This remains valid while SettingsStore is being changed.
-            val client = EventClient(registration.hermesOrigin, registration.apiKey, registration.deviceId)
-            val result = client.revokeDevice()
-
-            // Classify 404 as idempotent success; all other errors keep retrying.
-            val outcome = FcmRevokePolicy.classify(result.exceptionOrNull())
-            when (outcome) {
-                FcmRevokePolicy.RevokeOutcome.RevokeSuccess -> {
-                    // 404 or no error → idempotent cleanup.
-                    registry.clear()
+            when (val state = registry.loadOrMigrate(SettingsStore(app).settings.first())) {
+                RegistryState.Empty -> {
                     prefs.setPendingRevoke(false)
-                    if (prefs.isEnabled()) {
-                        // Enabled again (e.g. user re-enabled while revoke
-                        // was in flight): re-register fresh token.
-                        FcmTokenRegistration.enqueueCurrent(app)
-                        prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
-                    } else {
-                        prefs.setRegistrationState(FcmRegistrationState.DISABLED)
-                    }
+                    if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) }
+                    else prefs.setRegistrationState(FcmRegistrationState.DISABLED)
                     Result.success()
                 }
-                FcmRevokePolicy.RevokeOutcome.RetryAgain -> {
-                    prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING)
-                    Result.retry()
+                is RegistryState.LegacyPending -> {
+                    if (prefs.isPendingCredentialClear()) { registry.clear(); prefs.setPendingCredentialClear(false) }
+                    prefs.setPendingRevoke(false)
+                    if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) }
+                    else prefs.setRegistrationState(FcmRegistrationState.DISABLED)
+                    Result.success()
+                }
+                is RegistryState.Registered -> {
+                    val r = state.registration
+                    val outcome = FcmRevokePolicy.classify(EventClient(r.hermesOrigin, r.apiKey, r.deviceId).revokeDevice().exceptionOrNull())
+                    when (outcome) {
+                        FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.RevokeOutcome.CredentialRejected -> {
+                            FcmRevokeCleanup.onComplete(registry, SecureStore.get(app), prefs) {
+                                FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
+                            }
+                            Result.success()
+                        }
+                        FcmRevokePolicy.RevokeOutcome.RetryAgain -> { prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING); Result.retry() }
+                    }
                 }
             }
         }

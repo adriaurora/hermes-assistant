@@ -5,6 +5,7 @@ import android.content.Intent
 import dk.foss.jarvis.MainActivity
 import android.util.Log
 import dk.foss.jarvis.data.DeviceRegistryStore
+import dk.foss.jarvis.data.RegistryState
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.events.NotificationDeduper
 import dk.foss.jarvis.hermes.EventClient
@@ -35,7 +36,7 @@ object PushIngress {
 
     suspend fun ingestEventOutcome(context: Context, eventId: String): GateOutcome {
         val settings = SettingsStore(context).settings.first()
-        val device = DeviceRegistryStore(context).load()
+        val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration
         val prefs = PushPrefs(context)
         if (!prefs.isEnabled()) return GateOutcome.DISABLED
         if (!settings.isConfigured) return GateOutcome.DISABLED
@@ -50,7 +51,7 @@ object PushIngress {
 
     suspend fun ingestPending(context: Context): Int {
         val settings = SettingsStore(context).settings.first()
-        val device = DeviceRegistryStore(context).load() ?: return 0
+        val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return 0
         if (!PushPrefs(context).isEnabled() || !settings.isConfigured) return 0
         var delivered = 0
         val dispatcher = EventDispatcher(EventClient(settings.baseUrl, settings.apiKey, device.deviceId), deduper) { envelope, id ->
@@ -63,7 +64,7 @@ object PushIngress {
     /** Same operation as ingestPending, retaining failure for a retrying worker. */
     suspend fun syncPending(context: Context): Result<Int> {
         val settings = SettingsStore(context).settings.first()
-        val device = DeviceRegistryStore(context).load() ?: return Result.success(0)
+        val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return Result.success(0)
         if (!PushPrefs(context).isEnabled() || !settings.isConfigured) return Result.success(0)
         val dispatcher = EventDispatcher(EventClient(settings.baseUrl, settings.apiKey, device.deviceId), deduper) { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
@@ -74,13 +75,13 @@ object PushIngress {
 
     suspend fun onFcmToken(context: Context, token: String): Boolean {
         if (!PushPrefs(context).isEnabled()) return false
+        if (PushPrefs(context).isPendingRevoke() || PushPrefs(context).isPendingCredentialClear()) return false
         val settings = SettingsStore(context).settings.first()
         if (!settings.isConfigured) { Log.w("HermesPush", "endpoint received without Hermes configuration"); return false }
         val registry = DeviceRegistryStore(context)
-        val existing = registry.load()
-        val client = EventClient(settings.baseUrl, settings.apiKey, existing?.deviceId)
-        return if (existing == null) {
-            client.registerFcmDevice(token)
+        return when (val state = registry.loadOrMigrate(settings)) {
+            is RegistryState.LegacyPending -> false
+            is RegistryState.Empty -> EventClient(settings.baseUrl, settings.apiKey, null).registerFcmDevice(token)
                 .onSuccess {
                     registry.save(it.device_id, token, settings.baseUrl, settings.apiKey)
                     WorkManager.getInstance(context).enqueueUniqueWork(
@@ -91,9 +92,8 @@ object PushIngress {
                     )
                 }
                 .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
-        } else {
-            client.updateFcmToken(token)
-                .onSuccess { registry.save(existing.deviceId, token, settings.baseUrl, settings.apiKey) }
+            is RegistryState.Registered -> EventClient(settings.baseUrl, settings.apiKey, state.registration.deviceId).updateFcmToken(token)
+                .onSuccess { registry.save(state.registration.deviceId, token, state.registration.hermesOrigin, settings.apiKey) }
                 .onFailure { Log.e("HermesPush", "FCM token update failed", it) }.isSuccess
         }
     }

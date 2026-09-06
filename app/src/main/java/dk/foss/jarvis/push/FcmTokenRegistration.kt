@@ -8,7 +8,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 
 object FcmTokenRegistration {
-    private const val WORK_NAME = "hermes-fcm-token-registration"
+        internal const val WORK_NAME = "hermes-fcm-token-registration"
 
     /** Enqueue a token-registration worker without inputData. The worker
      *  fetches the current Firebase token internally via [FcmPushRegistrar]. */
