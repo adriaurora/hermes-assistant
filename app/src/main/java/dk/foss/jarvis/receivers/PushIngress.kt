@@ -120,24 +120,26 @@ object PushIngress {
             when {
                 update.isSuccess -> { registry.save(existing.deviceId, token, existing.hermesOrigin, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); TokenSyncOutcome.UPDATED }
                 StaleDeviceFallback.isConfirmedNotFound(err) -> c.registerFcmDevice(token).map { it.device_id }.fold({ id -> registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
-                else -> {
-                val outcome = if (StaleDeviceFallback.isConfirmedNotFound(err)) TokenSyncOutcome.PERMANENT else TokenSyncOutcome.RETRYABLE
-                outcome
-            }
+                else -> failure(err!!)
             }
         }
-        suspend fun registerFresh(): TokenSyncOutcome {
+        suspend fun registerFresh(legacyDeviceId: String? = null): TokenSyncOutcome {
             val label = Build.MODEL.takeIf { it.isNotBlank() } ?: "Android"
-            val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token)
+            val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token, legacyDeviceId = legacyDeviceId)
             return result.fold({ r -> if (r.device_secret.isNullOrBlank()) TokenSyncOutcome.PERMANENT else { registry.saveV1(r.device_id, r.device_secret, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.V1); schedulePendingSync(context); TokenSyncOutcome.REGISTERED } }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
         val hasSecret = existing?.deviceSecret?.isNotBlank() == true
+        val legacyClaim = when (state) {
+            is RegistryState.LegacyPending -> state.deviceId
+            is RegistryState.Registered -> if (!hasSecret) existing?.deviceId else null
+            RegistryState.Empty -> null
+        }
         return when (val action = if (state is RegistryState.LegacyPending) EnrollmentAction.RegisterFresh(false) else EnrollmentPolicy.decide(PushTransport.V1, existing != null, hasSecret)) {
             EnrollmentAction.None -> TokenSyncOutcome.PERMANENT
-            is EnrollmentAction.RegisterFresh -> { if (action.legacyRevokeFirst && existing != null) runCatching { EventClient(existing.hermesOrigin, existing.apiKey, existing.deviceId).revokeDevice() }; registerFresh() }
+            is EnrollmentAction.RegisterFresh -> { if (action.legacyRevokeFirst && existing != null) runCatching { EventClient(existing.hermesOrigin, existing.apiKey, existing.deviceId).revokeDevice() }; registerFresh(legacyClaim) }
             EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, settings.baseUrl, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
                  when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> { registry.clear(); registerFresh() }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
