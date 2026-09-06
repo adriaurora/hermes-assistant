@@ -10,6 +10,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
+import java.net.URI
 import java.io.IOException
 import dk.foss.jarvis.push.isValidHermesEventId
 
@@ -20,6 +21,8 @@ class EventFetchException(
     val statusCode: Int? = null,
     cause: Throwable? = null,
 ) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}", cause)
+
+class HermesHttpException(val statusCode: Int, cause: Throwable? = null) : IOException("HTTP $statusCode", cause)
 
 /** REST client for Hermes device registration and durable event operations. */
 interface EventApi {
@@ -47,7 +50,7 @@ class EventClient(
                 .addHeader("Authorization", "Bearer $apiKey").delete().build()
             Http.base.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
-                check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(200).ifBlank { response.message }}" }
+                if (!response.isSuccessful) throw HermesHttpException(response.code)
             }
         }
     }
@@ -114,6 +117,18 @@ class EventClient(
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         fun encoded(value: String) = URLEncoder.encode(value, "UTF-8")
         internal fun deviceRevokePath(deviceId: String) = "api/devices/${encoded(deviceId)}"
+        /** Canonical identity used for connection changes (not URL text). */
+        fun originIdentity(baseUrl: String): String = runCatching {
+            val uri = URI(baseUrl.trim().trimEnd('/'))
+            val scheme = uri.scheme.lowercase()
+            val host = uri.host.lowercase()
+            val port = if (uri.port != -1) uri.port else when (scheme) {
+                "http" -> 80
+                "https" -> 443
+                else -> -1
+            }
+            "$scheme://$host:$port"
+        }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
         internal fun fcmRegisterBody(token: String, deviceId: String? = null) =
             HermesJson.encodeToString(FcmRegisterBody.serializer(), FcmRegisterBody("fcm", token, deviceId))
         internal fun fcmTokenBody(token: String) =

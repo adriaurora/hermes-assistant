@@ -11,14 +11,14 @@ import org.junit.Test
  * Key contracts:
  * 1. HTTP 404 → RevokeSuccess (idempotent cleanup, no retry).
  * 2. All other errors → RetryAgain (never terminal).
- * 3. shouldRetryLocally only returns true for RetryAgain within limit.
+     * 3. All non-404 failures remain retryable.
  */
 class FcmRevokePolicyTest {
 
     // ── classify ──────────────────────────────────────────────────────────
 
     @Test fun `404 is idempotent success`() {
-        val err = Exception("HTTP 404: Device not found")
+        val err = dk.foss.jarvis.hermes.HermesHttpException(404)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.classify(err))
     }
 
@@ -38,12 +38,12 @@ class FcmRevokePolicyTest {
     }
 
     @Test fun `HTTP 500 classify as RetryAgain`() {
-        val err = Exception("HTTP 500: Internal Server Error")
+        val err = dk.foss.jarvis.hermes.HermesHttpException(500)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain, FcmRevokePolicy.classify(err))
     }
 
     @Test fun `HTTP 429 classify as RetryAgain`() {
-        val err = Exception("HTTP 429: Too Many Requests")
+        val err = dk.foss.jarvis.hermes.HermesHttpException(429)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain, FcmRevokePolicy.classify(err))
     }
 
@@ -53,29 +53,8 @@ class FcmRevokePolicyTest {
         assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain, FcmRevokePolicy.classify(ex))
     }
 
-    // ── shouldRetryLocally ────────────────────────────────────────────────
-
-    @Test fun `shouldRetryLocally true within limit`() {
-        val io = java.net.ConnectException("timeout")
-        assertTrue(FcmRevokePolicy.shouldRetryLocally(io, 0, 5))
-        assertTrue(FcmRevokePolicy.shouldRetryLocally(io, 4, 5))
-    }
-
-    @Test fun `shouldRetryLocally false at max retries`() {
-        val io = java.net.ConnectException("timeout")
-        assertFalse(FcmRevokePolicy.shouldRetryLocally(io, 5, 5))
-    }
-
-    @Test fun `shouldRetryLocally false for 404 regardless of attempt`() {
-        val err = Exception("HTTP 404: not found")
-        // 404 is RevokeSuccess, not RetryAgain → shouldRetryLocally is always false.
-        assertFalse(FcmRevokePolicy.shouldRetryLocally(err, 0, 5))
-        assertFalse(FcmRevokePolicy.shouldRetryLocally(err, 3, 5))
-        assertFalse(FcmRevokePolicy.shouldRetryLocally(err, 5, 5))
-    }
-
-    @Test fun `null message does not crash`() {
-        val ex = java.lang.Exception()
-        assertTrue(FcmRevokePolicy.shouldRetryLocally(ex, 0, 5))
+    @Test fun `typed 404 only is idempotent`() {
+        assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain,
+            FcmRevokePolicy.classify(Exception("HTTP 404: not found")))
     }
 }

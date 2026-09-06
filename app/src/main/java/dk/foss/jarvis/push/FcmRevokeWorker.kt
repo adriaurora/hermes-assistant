@@ -10,9 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dk.foss.jarvis.data.DeviceRegistryStore
-import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.EventClient
-import kotlinx.coroutines.flow.first
 import java.time.Duration
 
 /** WorkManager worker that revokes the device registration on the server. */
@@ -20,7 +18,6 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
 
     companion object {
         private const val WORK_NAME = "hermes-fcm-revoke"
-        private const val MAX_RETRIES = 5
 
         /**
          * Schedule (or replace) the revoke work. Uses network-constrained
@@ -60,9 +57,6 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             // Guard: only run if a revoke is pending.
             if (!prefs.isPendingRevoke()) return@withLockReturning Result.success()
 
-            val settings = SettingsStore(app).settings.first()
-            if (!settings.isConfigured) return@withLockReturning Result.retry()
-
             val registry = DeviceRegistryStore(app)
             val registration = registry.load() ?: run {
                 // No registration found — nothing to revoke (already
@@ -80,7 +74,9 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 return@withLockReturning Result.success()
             }
 
-            val client = EventClient(settings.baseUrl, settings.apiKey, registration.deviceId)
+            // The registration is bound to the origin and credential that created
+            // it. This remains valid while SettingsStore is being changed.
+            val client = EventClient(registration.hermesOrigin, registration.apiKey, registration.deviceId)
             val result = client.revokeDevice()
 
             // Classify 404 as idempotent success; all other errors keep retrying.
@@ -101,23 +97,7 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                     Result.success()
                 }
                 FcmRevokePolicy.RevokeOutcome.RetryAgain -> {
-                    // Transient error — always keep the retry queue alive.
-                    if (FcmRevokePolicy.shouldRetryLocally(
-                            result.exceptionOrNull()!!, runAttemptCount, MAX_RETRIES,
-                        )) {
-                        prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING)
-                        Result.retry()
-                    } else {
-                        // Max local retries — keep trying via WorkManager's
-                        // exponential back-off but mark ERROR.
-                        prefs.setRegistrationState(FcmRegistrationState.ERROR)
-                        Result.retry()
-                    }
-                }
-                FcmRevokePolicy.RevokeOutcome.RetryLater -> {
-                    // Classified as RetryLater (shouldn't happen from classify,
-                    // but handle for exhaustiveness): keep retrying.
-                    prefs.setRegistrationState(FcmRegistrationState.ERROR)
+                    prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING)
                     Result.retry()
                 }
             }

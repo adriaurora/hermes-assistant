@@ -82,7 +82,7 @@ object PushIngress {
         return if (existing == null) {
             client.registerFcmDevice(token)
                 .onSuccess {
-                    registry.save(it.device_id, token)
+                    registry.save(it.device_id, token, settings.baseUrl, settings.apiKey)
                     WorkManager.getInstance(context).enqueueUniqueWork(
                         "hermes-pending-sync", ExistingWorkPolicy.KEEP,
                         OneTimeWorkRequestBuilder<FcmPendingWorker>()
@@ -93,7 +93,7 @@ object PushIngress {
                 .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
         } else {
             client.updateFcmToken(token)
-                .onSuccess { registry.save(existing.deviceId, token) }
+                .onSuccess { registry.save(existing.deviceId, token, settings.baseUrl, settings.apiKey) }
                 .onFailure { Log.e("HermesPush", "FCM token update failed", it) }.isSuccess
         }
     }

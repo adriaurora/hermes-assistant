@@ -12,8 +12,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import dk.foss.jarvis.push.FcmLifecycle
+import dk.foss.jarvis.push.FcmRegistrationState
+import dk.foss.jarvis.push.FcmRevokeWorker
+import dk.foss.jarvis.push.FcmTokenRegistration
+import dk.foss.jarvis.push.PushPrefs
+import androidx.work.WorkManager
 
 private val Context.dataStore by preferencesDataStore(name = "jarvis_settings")
 
@@ -28,9 +35,29 @@ data class JarvisSettings(
 class SettingsStore internal constructor(
     private val store: DataStore<Preferences>,
     private val secure: SecureStore,
+    private val onConnectionChanged: suspend (JarvisSettings, JarvisSettings) -> Unit = { _, _ -> },
+    private val withConnectionLock: suspend (suspend () -> Unit) -> Unit = { block -> block() },
 ) {
     /** Android entry point: app DataStore + Keystore-backed SecureStore. */
-    constructor(context: Context) : this(context.dataStore, SecureStore.get(context))
+    constructor(context: Context) : this(context.dataStore, SecureStore.get(context), { old, new ->
+            val app = context.applicationContext
+            val prefs = PushPrefs(app)
+            val registry = DeviceRegistryStore(app)
+            val existing = registry.load()
+            val transition = ConnectionTransition.decide(old, new, existing)
+            if (transition.revokeRequired) {
+                // Keep the old origin/credential in the registry until DELETE
+                // succeeds; the revoke worker therefore cannot accidentally
+                // revoke against the newly selected Hermes instance.
+                prefs.setPendingRevoke(true)
+                prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING)
+                FcmRevokeWorker.schedule(app)
+                WorkManager.getInstance(app).cancelUniqueWork("hermes-fcm-token-registration")
+            } else if (existing != null && old.apiKey != new.apiKey) {
+                // A bearer-only change does not invalidate the device identity.
+                registry.updateCredentials(new.baseUrl, new.apiKey)
+            }
+        }, { block -> FcmLifecycle.withLock { block() } })
 
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
@@ -72,16 +99,28 @@ class SettingsStore internal constructor(
      * Any legacy plaintext key in DataStore is removed either way.
      */
     suspend fun updateConnection(baseUrl: String, apiKey: String?) {
-        store.edit { p ->
-            p[Keys.BASE_URL] = baseUrl.trim().trimEnd('/')
-            if (apiKey != null) {
-                val trimmed = apiKey.trim()
-                if (trimmed.isEmpty()) secure.clearToken() else secure.saveToken(trimmed)
-            } else {
-                secure.importOnce(p[Keys.API_KEY]) // preserve a never-imported legacy key
+        val normalized = baseUrl.trim().trimEnd('/')
+        withConnectionLock {
+            val old = settings.first()
+            val newToken = when (apiKey) {
+                null -> old.apiKey
+                else -> apiKey.trim()
             }
-            p.remove(Keys.API_KEY)
-            p.remove(Keys.MODEL)
+            // Persist the new connection while lifecycle lock is held. The
+            // callback schedules revoke only after this edit, so a follow-up
+            // registration can only observe B, never the old A settings.
+            store.edit { p ->
+                p[Keys.BASE_URL] = normalized
+                if (apiKey != null) {
+                    val trimmed = apiKey.trim()
+                    if (trimmed.isEmpty()) secure.clearToken() else secure.saveToken(trimmed)
+                } else {
+                    secure.importOnce(p[Keys.API_KEY]) // preserve a never-imported legacy key
+                }
+                p.remove(Keys.API_KEY)
+                p.remove(Keys.MODEL)
+            }
+            onConnectionChanged(old, JarvisSettings(normalized, newToken))
         }
     }
 

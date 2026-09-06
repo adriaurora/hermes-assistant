@@ -126,6 +126,12 @@ class SecureStore internal constructor(
     fun loadPushEndpoint(): String? = loadSecret(ENDPOINT_ALIAS)
     fun savePushEndpoint(value: String) = saveSecret(ENDPOINT_ALIAS, value)
     fun clearPushEndpoint() = blobs.remove(ENDPOINT_ALIAS)
+    fun loadPushOrigin(): String? = loadSecret(ORIGIN_ALIAS)
+    fun savePushOrigin(value: String) = saveSecret(ORIGIN_ALIAS, value)
+    fun clearPushOrigin() = blobs.remove(ORIGIN_ALIAS)
+    fun loadPushApiKey(): String? = loadSecret(PUSH_API_KEY_ALIAS)
+    fun savePushApiKey(value: String) = saveSecret(PUSH_API_KEY_ALIAS, value)
+    fun clearPushApiKey() = blobs.remove(PUSH_API_KEY_ALIAS)
 
     private fun loadSecret(alias: String): String? = blobs.get(alias)?.let { cipher.decrypt(it) }?.takeIf { it.isNotEmpty() }
     private fun saveSecret(alias: String, value: String) { blobs.put(alias, cipher.encrypt(value)) }
@@ -146,6 +152,8 @@ class SecureStore internal constructor(
         internal const val TOKEN_ALIAS = "hermes_api_token"
         internal const val DEVICE_ID_ALIAS = "hermes_device_id"
         internal const val ENDPOINT_ALIAS = "hermes_push_endpoint"
+        internal const val ORIGIN_ALIAS = "hermes_push_origin"
+        internal const val PUSH_API_KEY_ALIAS = "hermes_push_api_key"
 
         @Volatile
         private var instance: SecureStore? = null

@@ -43,10 +43,17 @@ class SettingsStoreMigrationTest {
     private lateinit var ds: DataStore<Preferences>
     private lateinit var store: SettingsStore
     private val legacyKey = stringPreferencesKey("api_key")
+    private val connectionChanges = mutableListOf<Pair<JarvisSettings, JarvisSettings>>()
+    private val settingsSeenInHook = mutableListOf<JarvisSettings>()
 
     private fun newStore(): SettingsStore {
         ds = PreferenceDataStoreFactory.create { File(tmp.newFolder(), "test.preferences_pb") }
-        store = SettingsStore(ds, SecureStore(cipher, blobs))
+        store = SettingsStore(ds, SecureStore(cipher, blobs), onConnectionChanged = { old, new ->
+            // The transition hook observes durable settings, before any work
+            // it might enqueue is allowed to run.
+            connectionChanges += old to new
+            settingsSeenInHook += store.settings.first()
+        })
         return store
     }
 
@@ -97,6 +104,24 @@ class SettingsStoreMigrationTest {
         val s = store.settings.first()
         assertEquals("", s.apiKey)
         assertEquals(false, s.isConfigured)
+    }
+
+    @Test
+    fun `endpoint change persists new settings before transition hook`() = runBlocking {
+        newStore()
+        store.updateConnection("http://hermes-a:8642/", "old-key")
+        connectionChanges.clear()
+        settingsSeenInHook.clear()
+
+        store.updateConnection(" http://hermes-b:8642/ ", "new-key")
+
+        val change = connectionChanges.single()
+        assertEquals("http://hermes-a:8642", change.first.baseUrl)
+        assertEquals("old-key", change.first.apiKey)
+        assertEquals("http://hermes-b:8642", change.second.baseUrl)
+        assertEquals("new-key", change.second.apiKey)
+        assertEquals("http://hermes-b:8642", store.settings.first().baseUrl)
+        assertEquals("http://hermes-b:8642", settingsSeenInHook.single().baseUrl)
     }
 
     private fun waitUntil(timeoutMs: Long = 5000, cond: () -> Boolean) {
