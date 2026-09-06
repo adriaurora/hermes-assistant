@@ -13,6 +13,9 @@ import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
 import androidx.core.app.ActivityCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import dk.foss.jarvis.receivers.PushIngress
 import dk.foss.jarvis.ui.ChatScreen
 import dk.foss.jarvis.ui.ChatViewModel
 import dk.foss.jarvis.ui.ConversationScreen
@@ -34,6 +37,7 @@ class MainActivity : ComponentActivity() {
         // particular, neither ACTION_ASSIST nor notification extras are trust
         // signals here.
         setContent { JarvisApp(this@MainActivity, startInConversation = false) }
+        lifecycleScope.launch { runCatching { PushIngress.schedulePendingSync(applicationContext) } }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {

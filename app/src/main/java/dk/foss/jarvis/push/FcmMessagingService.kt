@@ -1,5 +1,6 @@
 package dk.foss.jarvis.push
 
+import dk.foss.jarvis.data.SecureStore
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -25,6 +26,7 @@ class FcmMessagingService : FirebaseMessagingService() {
 
     /** Token rotated by Firebase — enqueue a worker that fetches the fresh token. */
     override fun onNewToken(token: String) {
+        runCatching { SecureStore.get(applicationContext).savePushEndpoint(token) }
         FcmTokenRegistration.enqueueCurrent(applicationContext)
     }
 }

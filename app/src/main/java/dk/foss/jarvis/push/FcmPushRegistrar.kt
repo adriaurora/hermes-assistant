@@ -30,12 +30,14 @@ object FcmPushRegistrar {
      *         (enabled=false or pendingRevoke=true) or HTTP failure.
      */
     suspend fun registerCurrentToken(context: Context): Boolean {
-        // Fast-path checks without lock.
+        return registerCurrentTokenOutcome(context).let { it == TokenSyncOutcome.REGISTERED || it == TokenSyncOutcome.UPDATED }
+    }
+    suspend fun registerCurrentTokenOutcome(context: Context): TokenSyncOutcome {
         val prefs = PushPrefs(context)
-        if (!prefs.isEnabled()) return false
-        if (prefs.isPendingRevoke()) return false
+        if (!prefs.isEnabled()) return TokenSyncOutcome.DISABLED
+        if (prefs.isPendingRevoke()) return TokenSyncOutcome.DISABLED
 
-        val token = currentToken() ?: return false
+        val token = currentToken() ?: return TokenSyncOutcome.RETRYABLE
         return registerToken(context, token)
     }
 
@@ -44,16 +46,16 @@ object FcmPushRegistrar {
      * Rechecks enabled + pendingRevoke inside the lock before calling
      * [PushIngress.onFcmToken].  State is updated inside the lock.
      */
-    private suspend fun registerToken(context: Context, token: String): Boolean {
+    private suspend fun registerToken(context: Context, token: String): TokenSyncOutcome {
         val app = context.applicationContext
         return FcmLifecycle.withLockReturning {
             val prefs = PushPrefs(app)
             // Revalidate inside lock (state may have changed).
-            if (!prefs.isEnabled() || prefs.isPendingRevoke()) return@withLockReturning false
+            if (!prefs.isEnabled() || prefs.isPendingRevoke()) return@withLockReturning TokenSyncOutcome.DISABLED
 
-            val success = PushIngress.onFcmToken(app, token)
-            prefs.setRegistrationState(if (success) FcmRegistrationState.ENABLED else FcmRegistrationState.ERROR)
-            success
+            val outcome = PushIngress.onFcmToken(app, token)
+            prefs.setRegistrationState(if (outcome == TokenSyncOutcome.REGISTERED || outcome == TokenSyncOutcome.UPDATED) FcmRegistrationState.ENABLED else if (outcome == TokenSyncOutcome.PERMANENT) FcmRegistrationState.ERROR else FcmRegistrationState.REGISTERING)
+            outcome
         }
     }
 }

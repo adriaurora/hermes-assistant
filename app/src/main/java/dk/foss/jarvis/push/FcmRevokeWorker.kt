@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dk.foss.jarvis.data.DeviceRegistryStore
 import dk.foss.jarvis.hermes.EventClient
+import dk.foss.jarvis.hermes.EventRpcClient
 import java.time.Duration
 
 /** WorkManager worker that revokes the device registration on the server. */
@@ -76,6 +77,13 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
 
             // The registration is bound to the origin and credential that created
             // it. This remains valid while SettingsStore is being changed.
+            if (prefs.protocol() == PushProtocol.V1) {
+                when (RevokeV1Policy.classify(EventRpcClient(registration.hermesOrigin, registration.apiKey, registration.deviceId, registration.deviceSecret).revoke().exceptionOrNull())) {
+                    RevokeAction.ConfirmAndClear -> { registry.clear(); prefs.setPendingRevoke(false); if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) } else prefs.setRegistrationState(FcmRegistrationState.DISABLED); return@withLockReturning Result.success() }
+                    RevokeAction.KeepAndError -> { prefs.setRegistrationState(FcmRegistrationState.ERROR); return@withLockReturning Result.failure() }
+                    RevokeAction.Retry -> { prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING); return@withLockReturning Result.retry() }
+                }
+            }
             val client = EventClient(registration.hermesOrigin, registration.apiKey, registration.deviceId)
             val result = client.revokeDevice()
 

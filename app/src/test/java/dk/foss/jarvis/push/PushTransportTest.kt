@@ -15,10 +15,10 @@ class PushTransportTest {
         var lastProbeAtVal: Long? = null
         var recordedProbes: MutableList<Pair<PushTransport, Long>> = mutableListOf()
 
-        override fun choice(): String? = choiceVal
-        override fun lastProbe(): PushTransport? = lastProbeVal
-        override fun lastProbeAt(): Long? = lastProbeAtVal
-        override fun recordProbe(transport: PushTransport, nowMs: Long) {
+        override suspend fun choice(): String? = choiceVal
+        override suspend fun lastProbe(): PushTransport? = lastProbeVal
+        override suspend fun lastProbeAt(): Long? = lastProbeAtVal
+        override suspend fun recordProbe(transport: PushTransport, nowMs: Long) {
             recordedProbes.add(transport to nowMs)
             lastProbeVal = transport
             lastProbeAtVal = nowMs

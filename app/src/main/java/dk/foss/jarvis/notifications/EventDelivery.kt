@@ -16,6 +16,8 @@ class EventFetcher(
     private val deduper: NotificationDeduper,
     private val deliver: (HermesEventEnvelope) -> Boolean = { true },
     private val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
+    private val wasDelivered: suspend (String) -> Boolean = { false },
+    private val onDelivered: suspend (String) -> Unit = {},
 ) {
     suspend fun onPushWoken(eventId: String): Result<Boolean> {
         if (!isValidHermesEventId(eventId)) return Result.failure(IllegalArgumentException("invalid event id"))
@@ -25,6 +27,7 @@ class EventFetcher(
                 onFailure = { Result.failure(it) },
             )
         }
+        if (wasDelivered(eventId)) return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
         if (deduper.observe(eventId)) return Result.success(false)
         val event = client.fetchEvent(eventId).getOrElse {
             deduper.forget(eventId)
@@ -43,6 +46,7 @@ class EventFetcher(
             deduper.forget(eventId)
             throw failure
         }
+        onDelivered(eventId)
         return client.ack(eventId).fold(
             onSuccess = { Result.success(true) },
             onFailure = { deduper.markAckPending(eventId); Result.failure(it) },
@@ -68,6 +72,8 @@ class EventFetcher(
 class EventDispatcher(
     private val client: EventApi,
     private val deduper: NotificationDeduper = NotificationDeduper(),
+    private val wasDelivered: suspend (String) -> Boolean = { false },
+    private val onDelivered: suspend (String) -> Unit = {},
     private val notify: (HermesEventEnvelope, Int) -> Unit,
 ) {
     private val fetcher = EventFetcher(client, deduper)
@@ -80,6 +86,7 @@ class EventDispatcher(
                 onFailure = { Result.failure(it) },
             )
         }
+        if (wasDelivered(eventId)) return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
         if (deduper.observe(eventId)) return Result.success(false)
         val event = client.fetchEvent(eventId).getOrElse {
             deduper.forget(eventId)
@@ -91,6 +98,7 @@ class EventDispatcher(
             deduper.forget(eventId)
             return Result.failure(failure)
         }
+        onDelivered(eventId)
         return client.ack(eventId).fold(
             onSuccess = { Result.success(true) },
             onFailure = { deduper.markAckPending(eventId); Result.failure(it) },

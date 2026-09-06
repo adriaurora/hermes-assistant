@@ -17,23 +17,21 @@ class FcmTokenWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
         // Fetch token outside lock (async).  If registration is called while
         // enabled, registerCurrentToken rechecks inside its lock.
-        val registered = FcmPushRegistrar.registerCurrentToken(app)
-
-        return if (registered) {
-            // HTTP call succeeded; state is already set to ENABLED inside the lock.
-            Result.success()
-        } else {
+        return when (FcmPushRegistrar.registerCurrentTokenOutcome(app)) {
+            TokenSyncOutcome.DISABLED, TokenSyncOutcome.REGISTERED, TokenSyncOutcome.UPDATED -> Result.success()
+            TokenSyncOutcome.PERMANENT -> {
             // registerCurrentToken returned false — either HTTP failure or state
             // mismatch inside the lock (e.g. disable was called).  Recheck: if
             // disabled/revoking, skip (no retry needed); otherwise retry HTTP.
             val recheckPrefs = PushPrefs(app)
             if (recheckPrefs.isPendingRevoke() || !recheckPrefs.isEnabled()) {
                 // Skipped — state changed by disable.  No retry needed.
-                Result.success()
+                Result.failure()
             } else {
-                // HTTP call failed.
-                if (runAttemptCount < 2) Result.retry() else Result.failure()
+                Result.failure()
             }
+            }
+            TokenSyncOutcome.RETRYABLE -> if (runAttemptCount < 4) Result.retry() else Result.failure()
         }
     }
 }

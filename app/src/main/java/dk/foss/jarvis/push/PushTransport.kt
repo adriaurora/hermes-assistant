@@ -4,10 +4,10 @@ enum class PushTransport { LEGACY, V1 }
 enum class PushTransportChoice(val raw: String) { AUTO("auto"), LEGACY("legacy"), V1("v1") }
 
 interface TransportChoiceStore {
-    fun choice(): String?
-    fun lastProbe(): PushTransport?
-    fun lastProbeAt(): Long?
-    fun recordProbe(transport: PushTransport, nowMs: Long)
+    suspend fun choice(): String?
+    suspend fun lastProbe(): PushTransport?
+    suspend fun lastProbeAt(): Long?
+    suspend fun recordProbe(transport: PushTransport, nowMs: Long)
 }
 
 object TransportDecision {
@@ -26,7 +26,8 @@ class TransportSelector(private val store: TransportChoiceStore, private val pro
         val now = System.currentTimeMillis()
         val cachedAt = store.lastProbeAt()
         val age = cachedAt?.let { now - it }
-        if (store.lastProbe() != null && age != null && age < TransportDecision.PROBE_TTL_MS) return store.lastProbe()!!
+        val cached = store.lastProbe()
+        if (cached != null && age != null && age < TransportDecision.PROBE_TTL_MS) return cached
         return try {
             val status = probe(baseUrl, apiKey)
             val selected = TransportDecision.decide(choice, null, null, status)

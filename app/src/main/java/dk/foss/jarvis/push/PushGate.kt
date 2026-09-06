@@ -11,11 +11,13 @@ data class PushDeps(
     val registeredDeviceId: String?,
     val client: EventApi,
     val deduper: NotificationDeduper,
+    val wasDelivered: suspend (String) -> Boolean = { false },
+    val onDelivered: suspend (String) -> Unit = {},
     val notify: (HermesEventEnvelope, Int) -> DeliveryOutcome,
 )
 
 enum class DeliveryOutcome { SUCCESS, PERMISSION_DENIED, POST_FAILURE }
-enum class GateOutcome { NOTIFIED, ACKED, DEDUPED, DISABLED, NO_DEVICE, FETCH_FAILURE, DELIVERY_FAILURE, ACK_FAILURE }
+enum class GateOutcome { NOTIFIED, ACKED, DEDUPED, DISABLED, NO_DEVICE, FETCH_FAILURE, FETCH_PERMANENT, DELIVERY_FAILURE, ACK_FAILURE }
 
 class PushGate(private val deps: PushDeps) {
     suspend fun handlePull(eventId: String): GateOutcome {
@@ -27,16 +29,19 @@ class PushGate(private val deps: PushDeps) {
                 deps.deduper.clearAckPending(eventId); GateOutcome.ACKED
             } else GateOutcome.ACK_FAILURE
         }
+        if (deps.wasDelivered(eventId)) return if (deps.client.ack(eventId).isSuccess) GateOutcome.ACKED else GateOutcome.ACK_FAILURE
         if (deps.deduper.observe(eventId)) return GateOutcome.DEDUPED
         val event = deps.client.fetchEvent(eventId).getOrElse {
+            val err = it
             deps.deduper.forget(eventId)
-            return GateOutcome.FETCH_FAILURE
+            return if ((err as? dk.foss.jarvis.hermes.EventFetchException)?.rpcCode == "event_not_found") GateOutcome.FETCH_PERMANENT else GateOutcome.FETCH_FAILURE
         }
         val envelope = EventMapper.toEnvelope(event)
         if (deps.notify(envelope, StableNotificationId.forEvent(eventId)) != DeliveryOutcome.SUCCESS) {
             deps.deduper.forget(eventId)
             return GateOutcome.DELIVERY_FAILURE
         }
+        deps.onDelivered(eventId)
         return if (deps.client.ack(eventId).isSuccess) GateOutcome.NOTIFIED
         else { deps.deduper.markAckPending(eventId); GateOutcome.ACK_FAILURE }
     }
