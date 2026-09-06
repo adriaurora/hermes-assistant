@@ -146,3 +146,21 @@ device becomes server-side orphaned; cleanup is out of scope.
 
 BYO Firebase remains supported: `google-services.json` is variant-specific,
 and builds without it remain supported.
+
+## Reconciliation with FCM hardening (main)
+
+This protocol specification reconciles with the FCM hardening changes on main
+(branch `reconcile/fcm-hardening-wire-v1`, design at `docs/fcm-v1-reconciliation/02-design.md`).
+Key adopted points:
+
+- **`RegistryState` / legacy migration**: `loadOrMigrate` publishes a single
+  complete record; `LegacyPending` rows stay pending until a bind or v1 migration.
+- **Origin pinning**: the persisted `hermes_origin` governs all operations for an
+  existing device, never overwritten by settings changes.
+- **`pendingCredentialClear`**: survives process death via DataStore; consumed by
+  connection effects and cleanup.
+- **Revoke**: `ExistingWorkPolicy.KEEP` with exponential back-off (30 s initial),
+  transient retry without local cap, 404 = idempotent success, 401/403 →
+  `CredentialRejected` (purge + unblock).
+- **`legacy_device_id`**: on `device.register` (fresh only, plugin ≥ f4670a1) the
+  optional parameter supersedes the imported legacy row. Older plugins ignore it.

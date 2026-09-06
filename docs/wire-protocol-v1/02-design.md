@@ -178,3 +178,13 @@ All register, update, revoke, and migration mutations run through the existing n
 ## 10. Security and compatibility
 
 `device_secret`, API key, and FCM token are SecureStore values; no secret, token, or API key is logged. `allowBackup=false`, release cleartext policy, and BYO Firebase behavior remain unchanged. No `HttpLoggingInterceptor` is introduced, and builds without `google-services.json` still compile.
+
+## 11. Reconciliation with FCM hardening (main)
+
+This design reconciles with the FCM hardening on main (branch `reconcile/fcm-hardening-wire-v1`; full design at `docs/fcm-v1-reconciliation/02-design.md`). Key adopted points:
+
+- **`RegistryState` / legacy migration**: `loadOrMigrate` publishes a single complete record through `RegistryState` (Registered / LegacyPending / Empty).
+- **Origin pinning**: the persisted `hermes_origin` governs all operations for an existing device, never overwritten by settings changes.
+- **`pendingCredentialClear`**: survives process death via DataStore; consumed by connection effects and cleanup.
+- **Revoke KEEP + CredentialRejected**: revoke uses `ExistingWorkPolicy.KEEP` with exponential back-off (30 s initial); transient retry without local cap; 404 = idempotent success; 401/403 → `CredentialRejected` (purge all local copies + unblock).
+- **`legacy_device_id`**: the `device.register` body now accepts an optional `legacy_device_id` field (snake_case wire). When present on a fresh registration, the server supersedes the imported legacy row. Requires plugin ≥ f4670a1; older plugins ignore the unknown field.
