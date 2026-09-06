@@ -76,6 +76,7 @@ fail the other variant at configuration time. For chat-only builds, remove all
 three possible config locations so the plugin is not applied.
 Hermes must expose the device-registration and event REST endpoints
 (`/api/devices/*`, `/api/events/*`) for notifications to work.
+`Clear saved key` in Settings also revokes the device registration on your Hermes instance and disables event notifications until push is re-enabled; the revoke retries in the background and treats a 404 as already-revoked.
 
 ### Signed release
 
