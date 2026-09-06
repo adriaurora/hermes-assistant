@@ -3,6 +3,8 @@ package dk.foss.jarvis.notifications
 import dk.foss.jarvis.events.RetryPolicy
 import dk.foss.jarvis.events.StableNotificationId
 import dk.foss.jarvis.hermes.EventApi
+import dk.foss.jarvis.hermes.EventFetchException
+import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesEvent
 import dk.foss.jarvis.hermes.HermesEventsPage
 import dk.foss.jarvis.hermes.HermesJson
@@ -68,6 +70,20 @@ class EventDeliveryTest {
         api.events["123e4567-e89b-12d3-a456-426614174002"] = Result.success(event("123e4567-e89b-12d3-a456-426614174002"))
         assertTrue(dispatcher.onPushWoken("123e4567-e89b-12d3-a456-426614174002").getOrThrow())
         assertEquals(listOf("123e4567-e89b-12d3-a456-426614174002"), notifications)
+    }
+
+    @Test
+    fun `event_not_found is permanent-gone onPendingSync success notify not invoked`() = runBlocking {
+        val api = FakeEventApiWithRpc(
+            events = mutableMapOf("123e4567-e89b-12d3-a456-426614174003" to Result.failure(EventFetchException(FetchFailureKind.HTTP, 404, rpcCode = "event_not_found"))),
+            pendingResult = Result.success(HermesEventsPage(listOf(event("123e4567-e89b-12d3-a456-426614174003")))),
+        )
+        val notifications = mutableListOf<String>()
+        val dispatcher = EventDispatcher(api) { envelope, _ -> notifications += envelope.eventId }
+
+        assertEquals(0, dispatcher.onPendingSync().getOrThrow())
+        assertTrue(notifications.isEmpty())
+        assertTrue(api.acked.isEmpty())
     }
 
     @Test
@@ -207,6 +223,26 @@ private class FakeEventApi(
     private val ackResult: Result<Unit> = Result.success(Unit),
 ) : EventApi {
     val events = events.toMutableMap()
+    val acked = mutableListOf<String>()
+
+    override suspend fun fetchEvent(id: String): Result<HermesEvent> =
+        events[id] ?: Result.failure(IllegalArgumentException("unknown event: $id"))
+
+    override suspend fun ack(id: String): Result<Unit> {
+        acked += id
+        return ackResult
+    }
+
+    override suspend fun pending(): Result<HermesEventsPage> = pendingResult
+}
+
+/** FakeEventApi that returns EventFetchException so event_not_found can be tested. */
+private class FakeEventApiWithRpc(
+    events: MutableMap<String, Result<HermesEvent>>,
+    var pendingResult: Result<HermesEventsPage> = Result.success(HermesEventsPage()),
+    private val ackResult: Result<Unit> = Result.success(Unit),
+) : EventApi {
+    val events = events
     val acked = mutableListOf<String>()
 
     override suspend fun fetchEvent(id: String): Result<HermesEvent> =

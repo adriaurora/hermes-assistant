@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
         // particular, neither ACTION_ASSIST nor notification extras are trust
         // signals here.
         setContent { JarvisApp(this@MainActivity, startInConversation = false) }
-        lifecycleScope.launch { runCatching { PushIngress.schedulePendingSync(applicationContext) } }
+        lifecycleScope.launch { runCatching { PushIngress.scheduleStartupWork(applicationContext) } }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {

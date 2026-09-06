@@ -58,6 +58,9 @@ class RpcRetryPolicyTest {
     @Test fun `OTHER PERMANENT`() =
         assertEquals(PERMANENT, RpcRetryPolicy.classify(FetchFailureKind.OTHER, null, null))
 
-    @Test fun `HTTP 404 RETRY`() =
-        assertEquals(RETRY, RpcRetryPolicy.classify(FetchFailureKind.HTTP, 404, null))
+    @Test fun `HTTP 404 PERMANENT`() =
+        assertEquals(PERMANENT, RpcRetryPolicy.classify(FetchFailureKind.HTTP, 404, null))
+
+    @Test fun `HTTP 405 PERMANENT`() =
+        assertEquals(PERMANENT, RpcRetryPolicy.classify(FetchFailureKind.HTTP, 405, null))
 }

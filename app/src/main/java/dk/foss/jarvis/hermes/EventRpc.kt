@@ -41,9 +41,9 @@ private data class RpcEnvelope(
 @Serializable private data class RpcRegisterBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.register", val label: String, val push: RpcPushBody, val device_id: String? = null, val device_secret: String? = null)
 @Serializable private data class RpcTokenBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.token.update", val device_id: String, val device_secret: String, val push_token: String)
 @Serializable private data class RpcRevokeBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.revoke", val device_id: String, val device_secret: String)
-@Serializable private data class RpcGetBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.get", val event_id: String)
-@Serializable private data class RpcAckBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.ack", val event_id: String)
-@Serializable private data class RpcPendingBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "events.pending", val limit: Int)
+@Serializable private data class RpcGetBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.get", val device_id: String, val device_secret: String, val event_id: String)
+@Serializable private data class RpcAckBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.ack", val device_id: String, val device_secret: String, val event_id: String)
+@Serializable private data class RpcPendingBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "events.pending", val device_id: String, val device_secret: String, val limit: Int)
 @Serializable private data class RpcProbeBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "events.pending", val device_id: String = "00000000-0000-0000-0000-000000000000", val device_secret: String = "capability-probe")
 
 class EventRpcClient(private val baseUrl: String, private val apiKey: String, private val deviceId: String? = null, private val deviceSecret: String? = null) : EventApi {
@@ -65,20 +65,25 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
 
     override suspend fun fetchEvent(id: String): Result<HermesEvent> {
         if (!isValidHermesEventId(id)) return Result.failure(EventFetchException(FetchFailureKind.OTHER))
-        return call(RpcGetBody(event_id = id), HermesEvent.serializer()).fold(
+        val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
+        return call(RpcGetBody(device_id = creds.first, device_secret = creds.second, event_id = id), HermesEvent.serializer()).fold(
             { event -> if (event.event_id == id) Result.success(event) else Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION, cause = IllegalArgumentException("event_id does not match requested id"))) },
             { Result.failure(it) })
     }
 
     override suspend fun ack(id: String): Result<Unit> {
         if (!isValidHermesEventId(id)) return Result.failure(IllegalArgumentException("invalid event id"))
-        return call(RpcAckBody(event_id = id), RpcDeviceStateResult.serializer(), acceptsNull = true).fold(
+        val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
+        return call(RpcAckBody(device_id = creds.first, device_secret = creds.second, event_id = id), RpcDeviceStateResult.serializer(), acceptsNull = true).fold(
             { Result.success(Unit) },
             { if ((it as? EventFetchException)?.rpcCode == "event_not_found") Result.success(Unit) else Result.failure(it) })
     }
 
     override suspend fun pending(): Result<HermesEventsPage> = pending(50)
-    suspend fun pending(limit: Int): Result<HermesEventsPage> = call(RpcPendingBody(limit = limit.coerceIn(1, 100)), HermesEventsPage.serializer())
+    suspend fun pending(limit: Int): Result<HermesEventsPage> {
+        val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
+        return call(RpcPendingBody(device_id = creds.first, device_secret = creds.second, limit = limit.coerceIn(1, 100)), HermesEventsPage.serializer())
+    }
 
     suspend fun probe(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {

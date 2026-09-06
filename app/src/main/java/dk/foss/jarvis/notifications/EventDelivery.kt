@@ -6,6 +6,8 @@ import dk.foss.jarvis.events.RetryPolicy
 import dk.foss.jarvis.events.HermesEventEnvelope
 import dk.foss.jarvis.events.StableNotificationId
 import dk.foss.jarvis.hermes.EventApi
+import dk.foss.jarvis.hermes.EventFetchException
+import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesEvent
 import dk.foss.jarvis.hermes.HermesEventsPage
 import dk.foss.jarvis.push.isValidHermesEventId
@@ -29,9 +31,20 @@ class EventFetcher(
         }
         if (wasDelivered(eventId)) return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
         if (deduper.observe(eventId)) return Result.success(false)
-        val event = client.fetchEvent(eventId).getOrElse {
+        val eventRes = client.fetchEvent(eventId)
+        val event = eventRes.getOrNull()
+        if (event == null) {
             deduper.forget(eventId)
-            return Result.failure(it)
+            val e = eventRes.exceptionOrNull()
+            if (e is EventFetchException && e.rpcCode == "event_not_found") {
+                return Result.success(false)
+            }
+            return Result.failure(e!!)
+        }
+        if (event.event_id != eventId) {
+            deduper.forget(eventId)
+            return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
+                cause = IllegalArgumentException("event_id does not match requested id")))
         }
         val envelope = EventMapper.toEnvelope(event)
         // Keep the clock dependency available for callers that enforce expiry at presentation time.
@@ -88,9 +101,20 @@ class EventDispatcher(
         }
         if (wasDelivered(eventId)) return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
         if (deduper.observe(eventId)) return Result.success(false)
-        val event = client.fetchEvent(eventId).getOrElse {
+        val eventRes = client.fetchEvent(eventId)
+        val event = eventRes.getOrNull()
+        if (event == null) {
             deduper.forget(eventId)
-            return Result.failure(it)
+            val e = eventRes.exceptionOrNull()
+            if (e is EventFetchException && e.rpcCode == "event_not_found") {
+                return Result.success(false)
+            }
+            return Result.failure(e!!)
+        }
+        if (event.event_id != eventId) {
+            deduper.forget(eventId)
+            return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
+                cause = IllegalArgumentException("event_id does not match requested id")))
         }
         val envelope = EventMapper.toEnvelope(event)
         try { notify(envelope, StableNotificationId.forEvent(eventId)) }

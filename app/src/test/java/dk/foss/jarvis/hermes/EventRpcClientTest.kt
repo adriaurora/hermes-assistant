@@ -128,11 +128,17 @@ class EventRpcClientTest {
             }
         }""".trimIndent()
         server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().fetchEvent(eventId)
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").fetchEvent(eventId)
         assertTrue(result.isSuccess)
         val event = result.getOrThrow()
         assertEquals(2, event.priority)
         assertEquals("delivered", event.state)
+
+        val bodyStr = server.takeRequest().body.readUtf8()
+        assertTrue(bodyStr.contains("\"type\":\"event.get\""))
+        assertTrue(bodyStr.contains("\"device_id\":\"11111111-1111-1111-1111-111111111111\""))
+        assertTrue(bodyStr.contains("\"device_secret\":\"SECRET-XYZ\""))
+        assertTrue(bodyStr.contains("\"event_id\":\"$eventId\""))
     }
 
     @Test fun `fetchEvent event_id distinto genera failure`() = runBlocking {
@@ -143,14 +149,20 @@ class EventRpcClientTest {
             }
         }""".trimIndent()
         server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().fetchEvent("123e4567-e89b-12d3-a456-426614174000")
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").fetchEvent("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as? EventFetchException
         assertEquals(FetchFailureKind.SERIALIZATION, ex?.kind)
     }
 
     @Test fun `fetchEvent con id no-UUID no hit servidor`() = runBlocking {
-        val result = client().fetchEvent("not-a-uuid")
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").fetchEvent("not-a-uuid")
+        assertTrue(result.isFailure)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun `fetchEvent sin creds retorna failure sin llamar servidor`() = runBlocking {
+        val result = client().fetchEvent("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(result.isFailure)
         assertEquals(0, server.requestCount)
     }
@@ -158,22 +170,34 @@ class EventRpcClientTest {
     // 6. ack
     @Test fun `ack success with ok true`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":true,\"protocol_version\":1,\"result\":{}}"))
-        val result = client().ack("123e4567-e89b-12d3-a456-426614174000")
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").ack("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(result.isSuccess)
+
+        val bodyStr = server.takeRequest().body.readUtf8()
+        assertTrue(bodyStr.contains("\"type\":\"event.ack\""))
+        assertTrue(bodyStr.contains("\"device_id\":\"11111111-1111-1111-1111-111111111111\""))
+        assertTrue(bodyStr.contains("\"device_secret\":\"SECRET-XYZ\""))
+        assertTrue(bodyStr.contains("\"event_id\":\"123e4567-e89b-12d3-a456-426614174000\""))
     }
 
     @Test fun `ack event_not_found retorna success`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":false,\"error\":{\"code\":\"event_not_found\",\"http_status\":404}}"))
-        val result = client().ack("123e4567-e89b-12d3-a456-426614174000")
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").ack("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(result.isSuccess)
     }
 
     @Test fun `ack device_auth_failed retorna failure`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":false,\"error\":{\"code\":\"device_auth_failed\",\"http_status\":403}}"))
-        val result = client().ack("123e4567-e89b-12d3-a456-426614174000")
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").ack("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals("device_auth_failed", ex.rpcCode)
+    }
+
+    @Test fun `ack sin creds retorna failure sin llamar servidor`() = runBlocking {
+        val result = client().ack("123e4567-e89b-12d3-a456-426614174000")
+        assertTrue(result.isFailure)
+        assertEquals(0, server.requestCount)
     }
 
     // 7. pending
@@ -187,24 +211,38 @@ class EventRpcClientTest {
             }
         }""".trimIndent()
         server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isSuccess)
         assertEquals(2, result.getOrThrow().events.size)
+
+        val bodyStr = server.takeRequest().body.readUtf8()
+        assertTrue(bodyStr.contains("\"type\":\"events.pending\""))
+        assertTrue(bodyStr.contains("\"device_id\":\"11111111-1111-1111-1111-111111111111\""))
+        assertTrue(bodyStr.contains("\"device_secret\":\"SECRET-XYZ\""))
+        assertTrue(bodyStr.contains("\"limit\":50"))
     }
 
     @Test fun `pending body type events pending con limit 50`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":true,\"protocol_version\":1,\"result\":{\"events\":[]}}"))
-        client().pending()
+        client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         val bodyStr = server.takeRequest().body.readUtf8()
         assertTrue(bodyStr.contains("\"type\":\"events.pending\""))
+        assertTrue(bodyStr.contains("\"device_id\":\"11111111-1111-1111-1111-111111111111\""))
+        assertTrue(bodyStr.contains("\"device_secret\":\"SECRET-XYZ\""))
         assertTrue(bodyStr.contains("\"limit\":50"))
     }
 
     @Test fun `pending(150) clamp a 100`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":true,\"protocol_version\":1,\"result\":{\"events\":[]}}"))
-        client().pending(150)
+        client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending(150)
         val bodyStr = server.takeRequest().body.readUtf8()
         assertTrue(bodyStr.contains("\"limit\":100"))
+    }
+
+    @Test fun `pending sin creds retorna failure sin llamar servidor`() = runBlocking {
+        val result = client().pending()
+        assertTrue(result.isFailure)
+        assertEquals(0, server.requestCount)
     }
 
     // 8. device_auth_failed → failure NUNCA success
@@ -212,7 +250,7 @@ class EventRpcClientTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody(
             """{"ok":false,"error":{"code":"device_auth_failed","message":"Invalid device credentials","http_status":403}}"""
         ))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.HTTP, ex.kind)
@@ -225,7 +263,7 @@ class EventRpcClientTest {
     // 9. ok:false SIN error object
     @Test fun `ok false sin error object`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":false}"))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals("invalid_response", ex.rpcCode)
@@ -234,7 +272,7 @@ class EventRpcClientTest {
     // 10. protocol_version:2
     @Test fun `protocol version 2 failure`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"ok\":true,\"protocol_version\":2,\"result\":{}}"))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals("unsupported_protocol", ex.rpcCode)
@@ -243,7 +281,7 @@ class EventRpcClientTest {
     // 11. HTTP 401 sin envelope
     @Test fun `HTTP 401 sin envelope`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(401))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.HTTP, ex.kind)
@@ -254,7 +292,7 @@ class EventRpcClientTest {
     // 12. HTTP 503
     @Test fun `HTTP 503`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(503))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.HTTP, ex.kind)
@@ -265,17 +303,19 @@ class EventRpcClientTest {
     // 13. HTTP 404
     @Test fun `HTTP 404 sin envelope`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(404))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.HTTP, ex.kind)
         assertEquals(404, ex.statusCode)
+        // 404 sin rpcCode → PERMANENT (downgrade/sin plugin)
+        assertEquals(RpcErrorClass.PERMANENT, RpcRetryPolicy.classify(ex.kind, ex.statusCode, ex.rpcCode))
     }
 
     // 14. Body HTML/malformado con 200
     @Test fun `body HTML con 200 failure`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("<html>error</html>"))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.SERIALIZATION, ex.kind)
@@ -284,7 +324,7 @@ class EventRpcClientTest {
     // 15. Network failure
     @Test fun `network failure`() = runBlocking {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
-        val result = client().pending()
+        val result = client(deviceId = "11111111-1111-1111-1111-111111111111", deviceSecret = "SECRET-XYZ").pending()
         assertTrue(result.isFailure)
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.NETWORK, ex.kind)
@@ -343,7 +383,7 @@ class EventRpcClientTest {
 
         // Test fetchEvent failure (bad status)
         server.enqueue(MockResponse().setResponseCode(502))
-        val r2 = client(apiKey = apiKey).fetchEvent("123e4567-e89b-12d3-a456-426614174000")
+        val r2 = client(apiKey = apiKey, deviceId = "d-1", deviceSecret = deviceSecret).fetchEvent("123e4567-e89b-12d3-a456-426614174000")
         assertTrue(r2.isFailure)
         checkNoSecretInException(r2.exceptionOrNull(), deviceSecret, apiKey)
 
@@ -355,7 +395,7 @@ class EventRpcClientTest {
 
         // Test pending failure
         server.enqueue(MockResponse().setResponseCode(401))
-        val r4 = client(apiKey = apiKey).pending()
+        val r4 = client(apiKey = apiKey, deviceId = "d-1", deviceSecret = deviceSecret).pending()
         assertTrue(r4.isFailure)
         checkNoSecretInException(r4.exceptionOrNull(), deviceSecret, apiKey)
     }

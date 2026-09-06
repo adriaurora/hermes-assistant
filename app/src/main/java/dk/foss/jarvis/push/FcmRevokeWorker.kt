@@ -78,10 +78,23 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             // The registration is bound to the origin and credential that created
             // it. This remains valid while SettingsStore is being changed.
             if (prefs.protocol() == PushProtocol.V1) {
+                if (registration.deviceSecret.isNullOrBlank()) {
+                    // device_secret absent — cannot authenticate revoke; clear
+                    // and re-register clean (orphan device will send NO_DEVICE pushes).
+                    registry.clear()
+                    prefs.setPendingRevoke(false)
+                    if (prefs.isEnabled()) {
+                        FcmTokenRegistration.enqueueCurrent(app)
+                        prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
+                    } else {
+                        prefs.setRegistrationState(FcmRegistrationState.DISABLED)
+                    }
+                    return@withLockReturning Result.success()
+                }
                 when (RevokeV1Policy.classify(EventRpcClient(registration.hermesOrigin, registration.apiKey, registration.deviceId, registration.deviceSecret).revoke().exceptionOrNull())) {
                     RevokeAction.ConfirmAndClear -> { registry.clear(); prefs.setPendingRevoke(false); if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) } else prefs.setRegistrationState(FcmRegistrationState.DISABLED); return@withLockReturning Result.success() }
                     RevokeAction.KeepAndError -> { prefs.setRegistrationState(FcmRegistrationState.ERROR); return@withLockReturning Result.failure() }
-                    RevokeAction.Retry -> { prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING); return@withLockReturning Result.retry() }
+                    RevokeAction.Retry -> { if (runAttemptCount < 5) { prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING); return@withLockReturning Result.retry() } else { prefs.setRegistrationState(FcmRegistrationState.UNREGISTERING); return@withLockReturning Result.failure() } }
                 }
             }
             val client = EventClient(registration.hermesOrigin, registration.apiKey, registration.deviceId)

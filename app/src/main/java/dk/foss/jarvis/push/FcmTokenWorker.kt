@@ -20,16 +20,12 @@ class FcmTokenWorker(context: Context, params: WorkerParameters) : CoroutineWork
         return when (FcmPushRegistrar.registerCurrentTokenOutcome(app)) {
             TokenSyncOutcome.DISABLED, TokenSyncOutcome.REGISTERED, TokenSyncOutcome.UPDATED -> Result.success()
             TokenSyncOutcome.PERMANENT -> {
-            // registerCurrentToken returned false — either HTTP failure or state
-            // mismatch inside the lock (e.g. disable was called).  Recheck: if
-            // disabled/revoking, skip (no retry needed); otherwise retry HTTP.
-            val recheckPrefs = PushPrefs(app)
-            if (recheckPrefs.isPendingRevoke() || !recheckPrefs.isEnabled()) {
-                // Skipped — state changed by disable.  No retry needed.
-                Result.failure()
-            } else {
-                Result.failure()
-            }
+                val recheckPrefs = PushPrefs(app)
+                if (recheckPrefs.isPendingRevoke() || !recheckPrefs.isEnabled()) {
+                    Result.success()
+                } else {
+                    Result.failure()
+                }
             }
             TokenSyncOutcome.RETRYABLE -> if (runAttemptCount < 4) Result.retry() else Result.failure()
         }

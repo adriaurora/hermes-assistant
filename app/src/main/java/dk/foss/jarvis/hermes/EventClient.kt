@@ -108,7 +108,7 @@ class EventClient(
                 .post(body.toRequestBody(JSON_MEDIA)).build()
             Http.base.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
-                check(response.isSuccessful) { "HTTP ${response.code}: ${text.take(200).ifBlank { response.message }}" }
+                check(response.isSuccessful) { "HTTP ${response.code}: ${response.message}" }
                 HermesJson.decodeFromString(serializer, text)
             }
         }

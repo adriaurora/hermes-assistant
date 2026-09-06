@@ -28,6 +28,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import dk.foss.jarvis.push.FcmPendingWorker
+import dk.foss.jarvis.push.FcmTokenRegistration
 import dk.foss.jarvis.push.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -109,7 +110,7 @@ object PushIngress {
             return result.fold({ if (existing == null) TokenSyncOutcome.REGISTERED else TokenSyncOutcome.UPDATED }, { failure(it) })
         }
         suspend fun registerFresh(): TokenSyncOutcome {
-            val label = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android"
+            val label = Build.MODEL.takeIf { it.isNotBlank() } ?: "Android"
             val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token)
             return result.fold({ r -> if (r.device_secret.isNullOrBlank()) TokenSyncOutcome.PERMANENT else { registry.saveV1(r.device_id, r.device_secret, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.V1); schedulePendingSync(context); TokenSyncOutcome.REGISTERED } }, { e ->
                 val x = e as? EventFetchException
@@ -118,12 +119,21 @@ object PushIngress {
         }
         return when (val action = EnrollmentPolicy.decide(PushTransport.V1, existing != null, existing?.deviceSecret?.isNotBlank() == true)) {
             EnrollmentAction.None -> TokenSyncOutcome.PERMANENT
-            is EnrollmentAction.RegisterFresh -> { if (action.legacyRevokeFirst && existing != null) runCatching { legacyClient(settings, existing.deviceId).revokeDevice() }; registerFresh() }
+            is EnrollmentAction.RegisterFresh -> { if (action.legacyRevokeFirst && existing != null) runCatching { EventClient(existing.hermesOrigin, existing.apiKey, existing.deviceId).revokeDevice() }; registerFresh() }
             EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, settings.baseUrl, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> { registry.clear(); prefs.setProtocol(PushProtocol.LEGACY); registerFresh() }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
+    }
+
+    suspend fun scheduleStartupWork(context: Context) {
+        schedulePendingSync(context)
+        val prefs = PushPrefs(context)
+        if (!prefs.isEnabled()) return
+        if (prefs.isPendingRevoke()) return
+        val state = prefs.registrationState.first()
+        if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
     }
 
     suspend fun schedulePendingSync(context: Context) {
