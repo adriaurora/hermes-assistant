@@ -123,6 +123,9 @@ class SecureStore internal constructor(
     fun loadDeviceId(): String? = loadSecret(DEVICE_ID_ALIAS)
     fun saveDeviceId(value: String) = saveSecret(DEVICE_ID_ALIAS, value)
     fun clearDeviceId() = blobs.remove(DEVICE_ID_ALIAS)
+    fun loadDeviceSecret(): String? = loadSecret(DEVICE_SECRET_ALIAS)
+    fun saveDeviceSecret(value: String) = saveSecret(DEVICE_SECRET_ALIAS, value)
+    fun clearDeviceSecret() = blobs.remove(DEVICE_SECRET_ALIAS)
     fun loadPushEndpoint(): String? = loadSecret(ENDPOINT_ALIAS)
     fun savePushEndpoint(value: String) = saveSecret(ENDPOINT_ALIAS, value)
     fun clearPushEndpoint() = blobs.remove(ENDPOINT_ALIAS)
@@ -151,6 +154,7 @@ class SecureStore internal constructor(
     companion object {
         internal const val TOKEN_ALIAS = "hermes_api_token"
         internal const val DEVICE_ID_ALIAS = "hermes_device_id"
+        internal const val DEVICE_SECRET_ALIAS = "hermes_device_secret"
         internal const val ENDPOINT_ALIAS = "hermes_push_endpoint"
         internal const val ORIGIN_ALIAS = "hermes_push_origin"
         internal const val PUSH_API_KEY_ALIAS = "hermes_push_api_key"
