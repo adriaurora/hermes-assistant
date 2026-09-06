@@ -78,6 +78,9 @@ data class HermesEvent(
     val priority: Int = 0,
     val status: String? = null,
     val device_id: String? = null,
+    val state: String? = null,
+    val delivered_at: Double? = null,
+    val acknowledged_at: Double? = null,
 )
 
 /** Hermes sends event priority as low/normal/high; retain integer compatibility for older servers. */

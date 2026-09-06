@@ -20,7 +20,8 @@ class EventFetchException(
     val kind: FetchFailureKind,
     val statusCode: Int? = null,
     cause: Throwable? = null,
-) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}", cause)
+    val rpcCode: String? = null,
+) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}${rpcCode?.let { " [$it]" }.orEmpty()}", cause)
 
 class HermesHttpException(val statusCode: Int, cause: Throwable? = null) : IOException("HTTP $statusCode", cause)
 
