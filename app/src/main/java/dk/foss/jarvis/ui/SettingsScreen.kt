@@ -79,6 +79,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var baseUrl by remember { mutableStateOf("") }
+    var savedBaseUrl by remember { mutableStateOf("") }
     var apiKey  by remember { mutableStateOf("") }
     var savedKey by remember { mutableStateOf(false) }
     var loaded  by remember { mutableStateOf(false) }
@@ -93,7 +94,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     fun clearSavedKey() {
         scope.launch {
-            store.updateConnection(baseUrl, "")
+            store.updateConnection(savedBaseUrl, "")
             savedKey = false
             status = null
         }
@@ -101,6 +102,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         val s = store.settings.first()
+        savedBaseUrl = s.baseUrl
         baseUrl = s.baseUrl
         savedKey = s.apiKey.isNotEmpty()
         loaded = true

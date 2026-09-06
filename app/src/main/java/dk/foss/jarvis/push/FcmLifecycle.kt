@@ -63,6 +63,9 @@ object FcmLifecycle {
         withLock {
             val prefs = PushPrefs(app)
             prefs.enable()
+            // While a revoke or credential clear is pending, the revoke worker
+            // re-registers on completion; do not enqueue a doomed registration.
+            if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return@withLock
             prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
             FcmTokenRegistration.enqueueCurrent(app)
         }
@@ -83,7 +86,7 @@ object FcmLifecycle {
             FcmRevokeWorker.schedule(app)
             // 5. Cancel any pending registration work so it does not run while
             //    unregistering.
-            WorkManager.getInstance(app).cancelUniqueWork("hermes-fcm-token-registration")
+            WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME)
         }
     }
 }

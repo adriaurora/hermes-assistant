@@ -17,15 +17,14 @@ object EnrollmentPolicy {
         else -> EnrollmentAction.UpdateToken
     }
 }
-sealed interface RevokeAction { data object ConfirmAndClear : RevokeAction; data object KeepAndError : RevokeAction; data object Retry : RevokeAction }
 object RevokeV1Policy {
-    fun classify(error: Throwable?): RevokeAction = when {
-        error == null -> RevokeAction.ConfirmAndClear
-        (error as? EventFetchException)?.rpcCode == "device_not_found" -> RevokeAction.ConfirmAndClear
-        (error as? EventFetchException)?.rpcCode == "device_revoked" -> RevokeAction.ConfirmAndClear
-        (error as? EventFetchException)?.rpcCode == "device_auth_failed" -> RevokeAction.KeepAndError
-        error is EventFetchException && error.rpcCode != null -> RevokeAction.KeepAndError
-        error is EventFetchException && error.kind == FetchFailureKind.OTHER -> RevokeAction.KeepAndError
-        else -> RevokeAction.Retry
+    fun classify(error: Throwable?): FcmRevokePolicy.RevokeOutcome = when {
+        error == null -> FcmRevokePolicy.RevokeOutcome.RevokeSuccess
+        (error as? EventFetchException)?.rpcCode == "device_not_found" -> FcmRevokePolicy.RevokeOutcome.RevokeSuccess
+        (error as? EventFetchException)?.rpcCode == "device_revoked" -> FcmRevokePolicy.RevokeOutcome.RevokeSuccess
+        (error as? EventFetchException)?.rpcCode == "device_auth_failed" -> FcmRevokePolicy.RevokeOutcome.CredentialRejected
+        error is EventFetchException && error.rpcCode != null -> FcmRevokePolicy.RevokeOutcome.RetryAgain
+        error is EventFetchException && error.kind == FetchFailureKind.OTHER -> FcmRevokePolicy.RevokeOutcome.RetryAgain
+        else -> FcmRevokePolicy.RevokeOutcome.RetryAgain
     }
 }

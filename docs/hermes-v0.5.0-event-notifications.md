@@ -57,10 +57,27 @@ Stale configs for old package names must not break credential-free builds.
 
 ## Registration and authenticated fetch
 
-`data/DeviceRegistryStore.kt` stores the `device_id` and opaque FCM token as
-Keystore-encrypted secrets through `SecureStore` aliases. The API key is stored
-in the same Keystore-backed store; it is never put in DataStore, BuildConfig,
-or HTTP logs.
+`data/DeviceRegistryStore.kt` stores four AndroidKeyStore-encrypted secrets
+through `SecureStore`: `device_id`, the opaque FCM token (`push_endpoint`),
+`hermes_origin`, and `push_api_key`. A `DeviceRegistration` is bound to the
+Hermes origin that created it: the pinned `hermes_origin` + `push_api_key`
+pair is used for `DELETE /api/devices/{device_id}`, and is not rewritten when
+active settings change. The app never sends the new origin's credential to the
+old origin, or vice versa.
+
+When upgrading from the version that stored only `device_id` and the token,
+`loadOrMigrate(currentSettings)` pins the active origin and bearer onto the
+same device ID, idempotently (the first binding wins and the pin is never
+rewritten), without creating another remote device or deleting anything. If
+active settings are invalid (blank base URL or bearer), nothing is invented:
+the record remains **legacy pending**, and neither revocation nor new
+registration occurs until valid configuration is available. `push_api_key`
+exists only while there is a real reason to retain it (a pending revoke or an
+active device), is always encrypted, and is removed on revoke success/404, on
+an unregistered-record purge, and never survives indefinitely after **Clear
+ saved key**. If a bound record turns out to be unknown to the active origin
+ (HTTP 404 on token update), the app registers a fresh device there and the
+ stale remote record remains orphaned.
 
 `hermes/EventClient.kt` uses the configured Hermes base URL and the existing
 Bearer credential:
@@ -115,11 +132,33 @@ enqueue the revoke worker. The device registration is retained (not cleared)
 until the revoke succeeds, so concurrent/future registration attempts are
 blocked.
 
-**Revoke**: persistent WorkManager worker with exponential back-off (30 s
-initial, 5 local retries). 404 is treated as idempotent success. Once
-successful the device registry is cleared and the state becomes `DISABLED`.
-If the user re-enables while a revoke is pending, the revoke completes first,
-then a fresh registration is scheduled.
+**Revoke**: a persistent WorkManager worker with a network constraint and
+exponential back-off (30 s initial). Transient errors (network, 5xx, 429) are
+retried without a local limit; 404 is idempotent success. 401/403 are classified
+as **credential rejected**: the worker abandons the attempt, purges every local
+copy (`device_id`, endpoint, origin, `push_api_key`, and, when a clear is
+pending, the bearer via a defensive second deletion), and unblocks state. The
+remote record is orphaned on the server in that case.
+
+**Change of Hermes instance (A→B)**: changing origin marks revoke pending. The
+DELETE is sent to origin A with A's pinned credential, never to B or with the
+new bearer. After success, A's registry is purged and, if push is enabled, a
+new device is registered against B. A bearer-only change on the same origin
+does not recreate the device; it only refreshes the pinned credential, and is
+skipped while a revoke is in flight.
+
+**Clear saved key**: without a `DeviceRegistration`, the bearer principal is
+cleared and any residual registry (`device_id`, endpoint, origin,
+`push_api_key`) is purged. With a registration, local push is disabled
+immediately, persistent DataStore flags `pendingCredentialClear` and
+`pendingRevoke` are set, and only the pinned revoke credential is retained
+temporarily. `DELETE /api/devices/{id}` runs against the pinned origin; on
+success/404 everything is purged, including a defensive second bearer delete.
+Transient failures retry while retaining only the credential needed for the
+DELETE. While either pending flag is active, no new FCM registration occurs.
+For legacy records, a record that can bind to active settings is revoked
+against that origin; an unrevocable record (missing origin/credential) is
+purged locally and left orphaned on the server.
 
 **Pending retry**: after a successful registration, `FcmPendingWorker` fetches
 `GET /api/events?status=pending` and delivers any events the phone missed. It
@@ -130,6 +169,9 @@ also retries transient sync failures; this is recovery work, not periodic pollin
 Push fetch retry uses `RetryPolicy.MAX_RETRIES = 2` (WorkManager auto-retry).
 `FcmRetryDecision` allows retry for `FETCH_FAILURE`, `DELIVERY_FAILURE`, and
 `ACK_FAILURE` while below the limit.
+
+The FCM token worker retries a failed registration up to two additional times
+(`runAttemptCount < 2`), for at most three attempts per enqueued work item.
 
 Expected cases:
 
