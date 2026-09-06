@@ -68,7 +68,7 @@ class EventRpcClient(
 }
 ```
 
-Registration sends `device.register` with `label` and `push:{type:"fcm", token}`. A fresh result contains `device_id`, `device_secret`, `state:"active"`, and `existing:false`; registration with credentials is idempotent and returns `device_secret:null` and `existing:true`. `device.token.update` sends `device_id`, `device_secret`, and `push_token`; `device.revoke` sends the two credentials. `event.get` sends `event_id`, and `events.pending` sends `limit` (the client uses 50; the server caps it at 100).
+Registration sends `device.register` with `label` and `push:{type:"fcm", token}`. A fresh result contains `device_id`, `device_secret`, `state:"active"`, and `existing:false`; registration with credentials is idempotent and returns `device_secret:null` and `existing:true`. `device.token.update` sends `device_id`, `device_secret`, and `push_token`; `device.revoke` sends the two credentials. `event.get` sends `device_id`, `device_secret`, and `event_id`; `event.ack` sends `device_id`, `device_secret`, and `event_id`; `events.pending` sends `device_id`, `device_secret`, and `limit` (the client uses 50; the server caps it at 100).
 
 `fetchEvent()` validates `event_id` and ownership exactly as the legacy client; `pending()` maps `events.pending` to `HermesEventsPage`; `ack()` maps `event.ack` to success and treats `event_not_found` as success. `probe()` sends `events.pending` with `device_id="00000000-0000-0000-0000-000000000000"` and `device_secret="capability-probe"`. It is non-mutating and must never call `device.register`.
 
@@ -90,7 +90,7 @@ The legacy client is not changed otherwise. Wire events contain `event_id,event_
 |---|---|---|
 | Success | envelope `ok`; ACK `event_not_found` | Complete |
 | Retry | NETWORK, timeouts, serialization, 5xx, 503 `platform_unavailable` or `platform_http_events_unsupported` | WorkManager retry, bounded |
-| Permanent | `unsupported_protocol`, `unknown_operation`, `invalid_request`, `invalid_push`, `payload_too_large`, `event_not_found` from `event.get` | No retry |
+| Permanent | `unsupported_protocol`, `unknown_operation`, `invalid_request`, `invalid_push`, `payload_too_large`, `event_not_found` from `event.get`, raw HTTP 404/405 (no envelope — downgrade/route absent) | No retry |
 | Re-enroll | `device_not_found`, `device_revoked`, `device_auth_failed` | Clear enrollment as appropriate and perform one fresh register under the lock |
 
 Permanent failures can never loop. Retry is bounded by `MAX_RETRIES` and WorkManager backoff. `device_auth_failed` during revoke does not clear local credentials and moves registration to ERROR.
@@ -148,14 +148,14 @@ Unit tests cover policy and concurrency decisions: `V1PolicyTest` exercises `Enr
 
 ## 8. Workers and lifecycle
 
-`FcmTokenWorker` uses v1 `device.token.update`, registers when no enrollment exists, and clears/re-registers for a re-enroll result. It has four bounded attempts and exponential 30-second backoff. `FcmRevokeWorker` uses `device.revoke`; success, `device_not_found`, and `device_revoked` clear local state and succeed; `device_auth_failed` leaves state ERROR without an infinite retry; network errors retry. `FcmEventWorker` returns failure without retry on `FETCH_PERMANENT`, and schedules pending sync after every completion, success or failure. `FcmPendingWorker` retries failures and succeeds on a completed sync. `MainActivity.onCreate` schedules pending sync, providing reboot/app-update recovery; it is also scheduled after token rotation and every event worker.
+`FcmTokenWorker` uses v1 `device.token.update`, registers when no enrollment exists, and clears/re-registers for a re-enroll result. It has four bounded attempts and exponential 30-second backoff. `FcmRevokeWorker` uses `device.revoke`; success, `device_not_found`, and `device_revoked` clear local state and succeed; `device_auth_failed` leaves state ERROR without an infinite retry; network errors retry up to 5 attempts (bounded); if `deviceSecret` is absent the worker clears and re-registers (secret irrecuperable). `FcmEventWorker` returns failure without retry on `FETCH_PERMANENT`, and schedules pending sync after every completion, success or failure. `FcmPendingWorker` retries failures up to 5 attempts (bounded), and succeeds on a completed sync. `MainActivity.onCreate` schedules startup work (pending sync + re-registration if token is stale), providing reboot/app-update recovery; it is also scheduled after token rotation and every event worker.
 
 | Worker | Unique work | Constraint | Retry/backoff | Permanent outcome |
 |---|---|---|---|---|
-| Token | `hermes-fcm-token-registration`, REPLACE | CONNECTED | up to 4, exponential 30s | failure |
-| Revoke | existing revoke work, REPLACE | CONNECTED | exponential 30s for network | success for absent/revoked |
+| Token | `hermes-fcm-token-registration`, REPLACE | CONNECTED | up to 4, exponential 30s | failure / skip if disabled after recheck |
+| Revoke | existing revoke work, REPLACE | CONNECTED | up to 5, exponential 30s; clear + re-register if secret absent | success for absent/revoked |
 | Event | unique per event, KEEP | CONNECTED | FETCH/DELIVERY/ACK retry policy | `FETCH_PERMANENT` → failure |
-| Pending | `hermes-pending-sync`, KEEP | CONNECTED | retry on failure | success on complete |
+| Pending | `hermes-pending-sync`, KEEP | CONNECTED | up to 5, exponential 30s; classify permanent → skip | success on complete |
 
 ## 9. Combined state machine
 

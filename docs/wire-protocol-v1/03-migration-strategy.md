@@ -142,3 +142,12 @@ loads as null and fresh-registers.
 App backup is disabled (`allowBackup=false`), and SecureStore's
 `device_secret` is erased on restore. Restoration consequently yields an
 incomplete enrollment and performs a clean fresh registration.
+
+### 9. Mixed enrollment state
+
+`load()` may return a `DeviceRegistration` with `device_id` present but
+`deviceSecret` absent (e.g. crash between `saveDeviceId` and `saveDeviceSecret`
+in `saveV1`). `EnrollmentPolicy` treats this as `RegisterFresh(legacyRevokeFirst=true)`:
+it attempts a best-effort legacy revoke, then fresh-register. The strong invariant
+is: `device_id` present **implies** `device_secret` present **after** a complete
+`saveV1`.

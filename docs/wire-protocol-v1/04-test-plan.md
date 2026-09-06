@@ -58,6 +58,13 @@ Run the suite with:
 | 38 | ACK event_not_found idempotente | `PushGateTest` / `RpcRetryPolicyTest` | unit |
 | 39 | Re-enroll en token update ante device\_* | `RpcRetryPolicyTest` / `V1PolicyTest` | unit |
 | 40 | Probe devuelve Result<Int> (HTTP status) y clasificación | `PushTransportTest` | unit |
+| 41 | Bodies get/ack/pending incluyen device_id + device_secret | `EventRpcClientTest` | unit + MockWebServer |
+| 42 | get/ack/pending sin creds → failure, requestCount==0 | `EventRpcClientTest` | unit |
+| 43 | Raw HTTP 404/405 → PERMANENT (no envelope) | `RpcRetryPolicyTest` / `EventRpcClientTest` | unit |
+| 44 | event_not_found en pending → onPendingSync success, notify no invocado | `EventDeliveryTest` | unit |
+| 45 | FcmPendingWorker acotado a 5 intentos, classify PERMANENT → failure | (integration) | Android test |
+| 46 | FcmRevokeWorker acotado a 5 intentos, secret ausente → clear + re-register | (integration) | Android test |
+| 47 | Startup re-registration: MainActivity abre app → token si state≠ENABLED | (integration) | Android test |
 
 ## 3. Assertions de contrato
 
