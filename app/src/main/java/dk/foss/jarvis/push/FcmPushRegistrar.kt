@@ -36,7 +36,7 @@ object FcmPushRegistrar {
         val prefs = PushPrefs(context)
         if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return TokenSyncOutcome.DISABLED
 
-        val token = currentToken() ?: return TokenSyncOutcome.RETRYABLE
+        val token = runCatching { currentToken() }.getOrNull() ?: return TokenSyncOutcome.RETRYABLE
         return registerToken(context, token)
     }
 

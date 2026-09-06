@@ -51,6 +51,7 @@ object PushIngress {
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration
         val prefs = PushPrefs(context)
         if (!prefs.isEnabled()) return GateOutcome.DISABLED
+        if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return GateOutcome.DISABLED
         if (!settings.isConfigured) return GateOutcome.DISABLED
         if (device == null) { Log.w("HermesPush", "push received without device registration"); return GateOutcome.NO_DEVICE }
         val transport = resolveTransport(context, settings)
@@ -68,7 +69,7 @@ object PushIngress {
         val settings = SettingsStore(context).settings.first()
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return 0
-        if (!prefs.isEnabled() || !settings.isConfigured) return 0
+        if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return 0
         val transport = resolveTransport(context, settings)
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return 0
         var delivered = 0
@@ -85,7 +86,7 @@ object PushIngress {
         val settings = SettingsStore(context).settings.first()
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return Result.success(0)
-        if (!prefs.isEnabled() || !settings.isConfigured) return Result.success(0)
+        if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return Result.success(0)
         val transport = resolveTransport(context, settings)
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return Result.success(0)
         val client = if (transport == PushTransport.V1) rpcClient(settings, device) else legacyClient(settings, device.deviceId)
