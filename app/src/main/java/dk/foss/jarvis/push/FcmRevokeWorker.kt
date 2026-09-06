@@ -24,7 +24,7 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
         private const val WORK_NAME = "hermes-fcm-revoke"
 
         /**
-         * Schedule (or replace) the revoke work. Uses network-constrained
+         * Schedule (or keep) the revoke work. Uses network-constrained
          * exponential-backoff via WorkManager's built-in retry.
          *
          * WorkManager persists and reschedules eligible work across reboot
@@ -48,7 +48,7 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofMillis(30_000L))
                 .build()
             WorkManager.getInstance(context)
-                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
         }
     }
 
@@ -64,13 +64,17 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             val registry = DeviceRegistryStore(app)
             when (val state = registry.loadOrMigrate(SettingsStore(app).settings.first())) {
                 RegistryState.Empty -> {
-                    prefs.setPendingRevoke(false)
-                    if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) }
-                    else prefs.setRegistrationState(FcmRegistrationState.DISABLED)
+                    // Nothing to revoke (already gone or the cleanup was interrupted by
+                    // process death): run the shared completion path so a stuck
+                    // pendingCredentialClear flag cannot block future registrations.
+                    FcmRevokeCleanup.onComplete(registry, SecureStore.get(app), prefs) {
+                        FcmTokenRegistration.enqueueCurrent(app)
+                        prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
+                    }
                     Result.success()
                 }
                 is RegistryState.LegacyPending -> {
-                    if (prefs.isPendingCredentialClear()) { registry.clear(); prefs.setPendingCredentialClear(false) }
+                    if (prefs.isPendingCredentialClear()) { registry.clear(); SecureStore.get(app).clearToken(); prefs.setPendingCredentialClear(false) }
                     prefs.setPendingRevoke(false)
                     if (prefs.isEnabled()) { FcmTokenRegistration.enqueueCurrent(app); prefs.setRegistrationState(FcmRegistrationState.REGISTERING) }
                     else prefs.setRegistrationState(FcmRegistrationState.DISABLED)

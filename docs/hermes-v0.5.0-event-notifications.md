@@ -75,7 +75,9 @@ registration occurs until valid configuration is available. `push_api_key`
 exists only while there is a real reason to retain it (a pending revoke or an
 active device), is always encrypted, and is removed on revoke success/404, on
 an unregistered-record purge, and never survives indefinitely after **Clear
-saved key**.
+ saved key**. If a bound record turns out to be unknown to the active origin
+ (HTTP 404 on token update), the app registers a fresh device there and the
+ stale remote record remains orphaned.
 
 `hermes/EventClient.kt` uses the configured Hermes base URL and the existing
 Bearer credential:

@@ -9,6 +9,7 @@ import dk.foss.jarvis.data.RegistryState
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.events.NotificationDeduper
 import dk.foss.jarvis.hermes.EventClient
+import dk.foss.jarvis.hermes.HermesHttpException
 import dk.foss.jarvis.notifications.EventDispatcher
 import dk.foss.jarvis.notifications.NotificationPermission
 import dk.foss.jarvis.notifications.postReminderNotification
@@ -28,6 +29,14 @@ import dk.foss.jarvis.push.FcmPendingWorker
 /** Transport-independent ingress boundary used by the native FCM service. */
 object PushIngress {
     private val deduper = NotificationDeduper()
+    private fun enqueuePendingSync(context: Context) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "hermes-pending-sync", ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<FcmPendingWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build(),
+        )
+    }
     private fun deps(settings: dk.foss.jarvis.data.JarvisSettings, device: dk.foss.jarvis.data.DeviceRegistration?, notify: (dk.foss.jarvis.events.HermesEventEnvelope, Int) -> DeliveryOutcome): PushDeps =
         PushDeps(settings.isConfigured, device?.deviceId, EventClient(settings.baseUrl, settings.apiKey, device?.deviceId), deduper, notify)
 
@@ -84,17 +93,36 @@ object PushIngress {
             is RegistryState.Empty -> EventClient(settings.baseUrl, settings.apiKey, null).registerFcmDevice(token)
                 .onSuccess {
                     registry.save(it.device_id, token, settings.baseUrl, settings.apiKey)
-                    WorkManager.getInstance(context).enqueueUniqueWork(
-                        "hermes-pending-sync", ExistingWorkPolicy.KEEP,
-                        OneTimeWorkRequestBuilder<FcmPendingWorker>()
-                            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                            .build(),
-                    )
+                    enqueuePendingSync(context)
                 }
                 .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
-            is RegistryState.Registered -> EventClient(settings.baseUrl, settings.apiKey, state.registration.deviceId).updateFcmToken(token)
-                .onSuccess { registry.save(state.registration.deviceId, token, state.registration.hermesOrigin, settings.apiKey) }
-                .onFailure { Log.e("HermesPush", "FCM token update failed", it) }.isSuccess
+            is RegistryState.Registered -> {
+                val existing = state.registration
+                val update = EventClient(settings.baseUrl, settings.apiKey, existing.deviceId).updateFcmToken(token)
+                val err = update.exceptionOrNull()
+                // postJson surfaces non-2xx as IllegalStateException("HTTP <code>: …");
+                // revokeDevice uses HermesHttpException. Accept both shapes.
+                val notFound = (err as? HermesHttpException)?.statusCode == 404 ||
+                    (err as? IllegalStateException)?.message?.startsWith("HTTP 404") == true
+                when {
+                    update.isSuccess -> {
+                        // Refresh the pinned credential but keep the pinned origin:
+                        // the remote device belongs to the origin that created it.
+                        registry.save(existing.deviceId, token, existing.hermesOrigin, settings.apiKey)
+                        true
+                    }
+                    notFound -> {
+                        // The pinned device does not exist on the active origin.
+                        EventClient(settings.baseUrl, settings.apiKey, null).registerFcmDevice(token)
+                            .onSuccess {
+                                registry.save(it.device_id, token, settings.baseUrl, settings.apiKey)
+                                enqueuePendingSync(context)
+                            }
+                            .onFailure { Log.e("HermesPush", "FCM device registration failed", it) }.isSuccess
+                    }
+                    else -> { Log.e("HermesPush", "FCM token update failed", update.exceptionOrNull()); false }
+                }
+            }
         }
     }
 
