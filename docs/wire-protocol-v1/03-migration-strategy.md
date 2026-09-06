@@ -24,6 +24,7 @@ The migration flow is:
 ```text
 legacy enrollment
   → capability probe says v1 available
+  → best-effort legacy revoke (failure ignored)
   → fresh device.register(label + push{type:fcm, token})
   → new device_id + device_secret
   → persist secret FIRST, device_id LAST (device_id present means enrolled)

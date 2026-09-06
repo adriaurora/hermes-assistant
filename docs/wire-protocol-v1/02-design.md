@@ -114,11 +114,13 @@ val DELIVERED_EVENTS = stringPreferencesKey("delivered_events")
 enum class PushProtocol { LEGACY, V1 }
 ```
 
-`PUSH_PROTOCOL` defaults to LEGACY and is explicit enrollment state; it is never inferred merely from a secret. `PUSH_TRANSPORT` defaults to `auto`. The JSON array in `DELIVERED_EVENTS` is kotlinx.serialization encoded, FIFO bounded to 128 IDs, and provides `recordDelivered(id)` and `wasDelivered(id)`. This is the phase-L persistent dedupe layer; the existing in-memory 1024-entry LRU remains in place.
+`PUSH_PROTOCOL` defaults to LEGACY and is explicit enrollment state; it is never inferred merely from a secret. `PUSH_TRANSPORT` defaults to `auto`. The JSON array in `DELIVERED_EVENTS` is kotlinx.serialization encoded, FIFO bounded to 128 IDs, and provides `recordDelivered(id)` and `wasDelivered(id)`. This is the phase-L persistent dedupe layer; the existing in-memory bounded 1024-entry set (insertion-order eviction) remains in place.
 
 ## 6. Transport selection
 
 `push/PushTransport.kt` defines `PushTransport { LEGACY, V1 }` and `TransportSelector`. An explicit preference wins. In `auto`, it calls `EventRpcClient.probe` with the current API key and caches the result in memory, persisting `last_probe_at` and probing at most once per five minutes:
+
+`probe()` returns `Result<Int>`: `success(status)` with the HTTP status code of any response (including `ok:false` envelopes), or `failure` only when the network call itself fails (no response received).
 
 | Probe result | Selection |
 |---|---|
@@ -126,9 +128,13 @@ enum class PushProtocol { LEGACY, V1 }
 | HTTP 404 (route absent in 0.20.5) | LEGACY |
 | HTTP 401 | V1 (handler exists; auth is configured separately) |
 | HTTP 200, including `device_not_found` envelope | V1 |
-| Network failure | LEGACY fail-safe |
+| Any other status / network failure | LEGACY |
 
 No user UI is required. Selection is resolved per ingress call, while the short cache prevents unnecessary probes.
+
+## 7. Test coverage
+
+Unit tests cover policy and concurrency decisions: `V1PolicyTest` exercises `EnrollmentPolicy` and `RevokeV1Policy` classification rules; `FcmLifecycleTest` verifies that `withLockReturning` serializes concurrent coroutines without overlap. MockWebServer tests validate `EventRpcClient` envelope parsing and `RpcRetryPolicy` error classification. `PushGateTest`, `EventDeliveryTest`, and `PushTransportTest` cover the gate, delivery, and transport selection flows.
 
 ## 7. FCM ingress and gate
 

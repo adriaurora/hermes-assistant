@@ -77,9 +77,9 @@ Schemas below are verified in the plugin `store.py`.
 ```
 
 It includes neither `device_id` nor the legacy `status` field. The existing
-Android `HermesEvent` is compatible: required `event_type`, `created_at`, and
-`available_at` are present; `EventPrioritySerializer` already supports string
-priority, and `HermesJson` ignores extra fields.
+Android `HermesEvent` is compatible: required `event_id`, `event_type`,
+`created_at`, and `available_at` are present; `EventPrioritySerializer`
+already supports string priority, and `HermesJson` ignores extra fields.
 
 ### 5.2 Registration and errors
 

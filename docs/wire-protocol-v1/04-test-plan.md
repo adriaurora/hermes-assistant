@@ -27,7 +27,7 @@ Run the suite with:
 | 7 | SecureStore roundtrip; blob cifrado no contiene plaintext | `SecureStoreTest` | unit Android crypto shim |
 | 8 | Crash simulado durante persistencia deja `load() == null` | `DeviceRegistryStoreTest` | unit |
 | 9 | Rotación de token usa `device.token.update` v1 | `FcmTokenWorkerTest` | coroutine unit |
-| 10 | Register/update concurrentes quedan serializados por lock | `FcmLifecycleConcurrencyTest` | coroutine test |
+| 10 | Register/update concurrentes quedan serializados por lock | `FcmLifecycleConcurrencyTest` / `FcmLifecycleTest` | coroutine test |
 | 11 | Revoke v1 envía las credenciales correctas | `FcmRevokeWorkerTest` | unit + MockWebServer |
 | 12 | Revoke network→retry y `device_not_found`→success | `FcmRevokeWorkerTest` | unit + MockWebServer |
 | 13 | `event.get` devuelve evento completo | `EventRpcClientTest` | unit + MockWebServer |
@@ -35,19 +35,29 @@ Run the suite with:
 | 15 | ACK tras delivery exitosa | `PushGateTest` | unit |
 | 16 | ACK duplicado es idempotente | `EventRpcClientTest` | unit + MockWebServer |
 | 17 | Pending mapea `events` a `HermesEventsPage` | `EventRpcClientTest` | unit + MockWebServer |
-| 18 | Dedup memoria y persistente sobrevive “restart” | `NotificationDeduperTest` / `PushPrefsTest` | unit |
+| 18 | Dedup memoria y persistente sobrevive "restart" | `NotificationDeduperTest` / `PushPrefsTest` / `DeliveredEventLogTest` | unit |
 | 19 | Restart de proceso repara estados parciales | `PushStateMachineTest` | unit |
-| 20 | Probe 404/503 selecciona LEGACY | `TransportSelectorTest` | unit + MockWebServer |
+| 20 | Probe 404/503 selecciona LEGACY | `TransportSelectorTest` / `PushTransportTest` | unit + MockWebServer |
 | 21 | Migración legacy hace revoke best-effort, register nuevo y V1 | `PushIngressMigrationTest` | coroutine + MockWebServer |
 | 22 | `DeviceRegistration.toString()` no contiene secret; secret solo SecureStore | `RedactionTest` | unit |
 | 23 | Secret no aparece en conversación serializada ni preferencias | `RedactionTest` | unit |
-| 24 | FCM sin `event_id` o con UUID inválido se descarta | `FcmPayloadParserTest` | unit |
-| 25 | FCM `protocol_version="2"` se ignora | `FcmPayloadParserTest` | unit |
-| 26 | Payload antiguo sin `protocol_version` se acepta | `FcmPayloadParserTest` | unit |
+| 24 | FCM sin `event_id` o con UUID inválido se descarta | `FcmPayloadParserTest` / `FcmPayloadParserProtocolVersionTest` | unit |
+| 25 | FCM `protocol_version="2"` se ignora | `FcmPayloadParserTest` / `FcmPayloadParserProtocolVersionTest` | unit |
+| 26 | Payload antiguo sin `protocol_version` se acepta | `FcmPayloadParserTest` / `FcmPayloadParserProtocolVersionTest` | unit |
 | 27 | Tabla completa de retry classification | `RpcRetryPolicyTest` | parameterized unit |
 | 28 | Push disabled no registra ni actualiza | `PushStateMachineTest` | unit |
-| 29 | Credenciales existentes no duplican register; lock preservado | `FcmLifecycleConcurrencyTest` | coroutine + MockWebServer |
+| 29 | Credenciales existentes no duplican register; lock preservado | `FcmLifecycleConcurrencyTest` / `FcmLifecycleTest` | coroutine + MockWebServer |
 | 30 | Tests FCM existentes continúan pasando | `Fcm*Test` existentes | unit |
+| 31 | V1 EnrollmentPolicy decide según registro y secreto | `V1PolicyTest` | unit |
+| 32 | V1 RevokeV1Policy clasifica errores por rpcCode y kind | `V1PolicyTest` | unit |
+| 33 | PushGate dedup y fetch permanente | `PushGateTest` | unit |
+| 34 | EventDispatcher pending sync y onDelivered | `EventDeliveryTest` | unit |
+| 35 | Probe 401/200→V1 | `PushTransportTest` | unit |
+| 36 | Revoke device_auth_failed conserva credenciales | `RpcRetryPolicyTest` / `V1PolicyTest` | unit |
+| 37 | Revoke device_revoked→success | `RpcRetryPolicyTest` / `V1PolicyTest` | unit |
+| 38 | ACK event_not_found idempotente | `PushGateTest` / `RpcRetryPolicyTest` | unit |
+| 39 | Re-enroll en token update ante device\_* | `RpcRetryPolicyTest` / `V1PolicyTest` | unit |
+| 40 | Probe devuelve Result<Int> (HTTP status) y clasificación | `PushTransportTest` | unit |
 
 ## 3. Assertions de contrato
 
@@ -58,3 +68,5 @@ La persistencia debe comprobar el orden secreto-antes-que-ID: una excepción iny
 ## 4. Limitaciones
 
 Workers reales, `FcmMessagingService`, Keystore Android y entrega FCM no son completamente testeables en JVM. Se validan en pruebas E2E server-side y en instrumentación Android. El plan JVM cubre sus decisiones puras, sus entradas y sus resultados persistidos; la compatibilidad de los tests FCM existentes debe seguir siendo una condición de aceptación.
+
+Nota: el límite de 16 KiB se aplica y verifica en el lado del servidor (el cliente envía el request sin truncarlo, pero el servidor rechaza payloads > 16 KiB con `payload_too_large` 413).
