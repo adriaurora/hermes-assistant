@@ -15,6 +15,13 @@ class FcmRegistrationPolicyTest {
     @Test fun `pendingRevoke blocks registration`() {
         assertFalse(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = true))
     }
+    @Test fun `pending credential clear blocks registration`() {
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "token", pendingCredentialClear = true))
+        assertFalse(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = true, pendingCredentialClear = true))
+    }
+    @Test fun `registration allowed when no revoke and no clear pending`() {
+        assertTrue(FcmRegistrationPolicy.shouldRegister(true, "token", pendingRevoke = false, pendingCredentialClear = false))
+    }
 
     @Test fun `disabled blocks registration regardless of token`() {
         assertFalse(FcmRegistrationPolicy.shouldRegister(false, "token", pendingRevoke = false))

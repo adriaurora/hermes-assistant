@@ -21,6 +21,14 @@ class FcmRevokePolicyTest {
         val err = dk.foss.jarvis.hermes.HermesHttpException(404)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.classify(err))
     }
+    @Test fun `401 abandons revocation (credential rejected)`() {
+        val err = dk.foss.jarvis.hermes.HermesHttpException(401)
+        assertEquals(FcmRevokePolicy.RevokeOutcome.CredentialRejected, FcmRevokePolicy.classify(err))
+    }
+    @Test fun `403 abandons revocation (credential rejected)`() {
+        val err = dk.foss.jarvis.hermes.HermesHttpException(403)
+        assertEquals(FcmRevokePolicy.RevokeOutcome.CredentialRejected, FcmRevokePolicy.classify(err))
+    }
 
     @Test fun `404 no error also success`() {
         assertEquals(FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.classify(null))
