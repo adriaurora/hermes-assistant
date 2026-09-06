@@ -34,7 +34,7 @@ object FcmPushRegistrar {
     }
     suspend fun registerCurrentTokenOutcome(context: Context): TokenSyncOutcome {
         val prefs = PushPrefs(context)
-        if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return TokenSyncOutcome.DISABLED
+        if (!LifecycleGuards.canAcceptTokenSync(prefs.isEnabled(), prefs.isPendingRevoke(), prefs.isPendingCredentialClear())) return TokenSyncOutcome.DISABLED
 
         val token = runCatching { currentToken() }.getOrNull() ?: return TokenSyncOutcome.RETRYABLE
         return registerToken(context, token)
@@ -50,7 +50,7 @@ object FcmPushRegistrar {
         return FcmLifecycle.withLockReturning {
             val prefs = PushPrefs(app)
             // Revalidate inside lock (state may have changed).
-            if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return@withLockReturning TokenSyncOutcome.DISABLED
+            if (!LifecycleGuards.canAcceptTokenSync(prefs.isEnabled(), prefs.isPendingRevoke(), prefs.isPendingCredentialClear())) return@withLockReturning TokenSyncOutcome.DISABLED
 
             val outcome = PushIngress.onFcmToken(app, token)
             prefs.setRegistrationState(if (outcome == TokenSyncOutcome.REGISTERED || outcome == TokenSyncOutcome.UPDATED) FcmRegistrationState.ENABLED else if (outcome == TokenSyncOutcome.PERMANENT) FcmRegistrationState.ERROR else FcmRegistrationState.REGISTERING)

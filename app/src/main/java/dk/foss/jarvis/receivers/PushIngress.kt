@@ -99,7 +99,7 @@ object PushIngress {
 
     suspend fun onFcmToken(context: Context, token: String): TokenSyncOutcome {
         val prefs = PushPrefs(context)
-        if (!prefs.isEnabled()) return TokenSyncOutcome.DISABLED
+        if (!LifecycleGuards.canAcceptTokenSync(prefs.isEnabled(), prefs.isPendingRevoke(), prefs.isPendingCredentialClear())) return TokenSyncOutcome.DISABLED
         if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return TokenSyncOutcome.DISABLED
         val settings = SettingsStore(context).settings.first()
         if (!settings.isConfigured) { Log.w("HermesPush", "endpoint received without Hermes configuration"); return TokenSyncOutcome.PERMANENT }
@@ -111,8 +111,20 @@ object PushIngress {
         if (transport == PushTransport.LEGACY) {
             if (state is RegistryState.LegacyPending) return TokenSyncOutcome.DISABLED
             val c = legacyClient(settings, existing?.deviceId)
-            val result = if (existing == null) c.registerFcmDevice(token).map { it.device_id }.also { it.onSuccess { registry.save(it, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context) } } else c.updateFcmToken(token).map { existing.deviceId }.also { it.onSuccess { registry.save(existing.deviceId, token, existing.hermesOrigin, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY) } }
-            return result.fold({ if (existing == null) TokenSyncOutcome.REGISTERED else TokenSyncOutcome.UPDATED }, { failure(it) })
+            if (existing == null) {
+                val reg = c.registerFcmDevice(token).map { it.device_id }
+                return reg.fold({ id -> registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
+            }
+            val update = c.updateFcmToken(token)
+            val err = update.exceptionOrNull()
+            when {
+                update.isSuccess -> { registry.save(existing.deviceId, token, existing.hermesOrigin, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); TokenSyncOutcome.UPDATED }
+                StaleDeviceFallback.isConfirmedNotFound(err) -> c.registerFcmDevice(token).map { it.device_id }.fold({ id -> registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
+                else -> {
+                val outcome = if (StaleDeviceFallback.isConfirmedNotFound(err)) TokenSyncOutcome.PERMANENT else TokenSyncOutcome.RETRYABLE
+                outcome
+            }
+            }
         }
         suspend fun registerFresh(): TokenSyncOutcome {
             val label = Build.MODEL.takeIf { it.isNotBlank() } ?: "Android"

@@ -63,9 +63,7 @@ object FcmLifecycle {
         withLock {
             val prefs = PushPrefs(app)
             prefs.enable()
-            // While a revoke or credential clear is pending, the revoke worker
-            // re-registers on completion; do not enqueue a doomed registration.
-            if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return@withLock
+            if (!LifecycleGuards.shouldEnqueueRegistration(prefs.isEnabled(), prefs.isPendingRevoke(), prefs.isPendingCredentialClear())) return@withLock
             prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
             FcmTokenRegistration.enqueueCurrent(app)
         }
