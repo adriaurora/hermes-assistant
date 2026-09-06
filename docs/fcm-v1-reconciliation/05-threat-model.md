@@ -11,6 +11,7 @@
 | register during revoke | duplicate/orphan devices | triple flag check, KEEP policy, lifecycle lock |
 | duplicate after restart | repeated notification | `DeliveredEventLog` + `wasDelivered`, idempotent ACK |
 | orphan devices | failed migration leaves remote record | document orphan; never claim legacy ID; server cleanup is out of scope |
+| REENROLL orphan | v1 token update fails with REENROLL → clear() + fresh register abandons previous device; remote row becomes orphaned because secret is required but no longer valid | explicit code comment; documented in this table and in §6 of the threat model |
 | rollback | destroys usable V1 enrollment | additive migration; LEGACY probe retains V1 credentials |
 | capability probe | probe creates device or mutates registry | dummy credentials and `events.pending`; probe never calls register and never mutates registry |
 | semantic HTTP success | HTTP 200 hides operation failure | always parse envelope; HTTP 200 `ok:false` is failure |

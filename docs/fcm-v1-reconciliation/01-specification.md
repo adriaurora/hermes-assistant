@@ -57,4 +57,9 @@ con `feature/wire-protocol-v1@b2e9558` (RPC único `POST /api/platforms/hermes_a
 | LEGACY | cualquier servidor legacy | rutas legacy |
 | V1 | plugin | RPC v1 |
 
+Nota LEGACY→V1: con plugin ≥ f4670a1 la fila legacy importada se marca
+`superseded` vía `legacy_device_id` (o token match) — sin huérfanos; con plugin
+anterior: la fila legacy queda `legacy_pending_enrollment` huérfana (aceptado,
+documentado en §6).
+
 No se hace cutover server, ni Sessions API (tampoco model selection, Runs, STT/TTS ni UI).

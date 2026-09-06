@@ -86,4 +86,25 @@ class ReconciledRegistryTest {
         assertEquals("dev-partial", lp.deviceId)
         assertEquals("push-endpoint", lp.pushEndpoint)
     }
+
+    /** F1: legacy re-registration clears a stale v1 secret (orphan hygiene). */
+    @Test fun legacyReRegistrationClearsAStaleV1Secret() {
+        val (store, _) = newStore()
+        // Simulate a prior v1 enrollment (secret + deviceId persisted)
+        store.saveV1("dev-v1-old", "secret-1", "push-endpoint", "http://old-server", "old-key")
+        // Verify secret exists before clear
+        val preClear = store.load()
+        assertNotNull(preClear)
+        assertEquals("secret-1", preClear!!.deviceSecret)
+        // Simulate: clear() happens before a fresh legacy save
+        store.clear()
+        // Then a new legacy registration (simulates the Empty branch in PushIngress)
+        store.save("dev-new", "new-push-endpoint", "http://new-server", "new-key")
+        // Verify: old secret is gone, new device has no secret
+        val postLoad = store.load()
+        assertNotNull("load() != null after save", postLoad)
+        assertNull("deviceSecret must be null after clear+save", postLoad!!.deviceSecret)
+        assertEquals("dev-new", postLoad.deviceId)
+        assertEquals("http://new-server", postLoad.hermesOrigin)
+    }
 }

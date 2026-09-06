@@ -107,19 +107,27 @@ object PushIngress {
         val state = registry.loadOrMigrate(settings)
         val existing = (state as? RegistryState.Registered)?.registration
         val transport = resolveTransport(context, settings)
-        fun failure(e: Throwable): TokenSyncOutcome = if ((e as? HermesHttpException)?.statusCode == 401 || (e as? HermesHttpException)?.statusCode == 404) TokenSyncOutcome.PERMANENT else TokenSyncOutcome.RETRYABLE
+        fun failure(e: Throwable): TokenSyncOutcome = when {
+            StaleDeviceFallback.isAuthRejection(e) -> TokenSyncOutcome.PERMANENT
+            (e as? HermesHttpException)?.statusCode == 404 -> TokenSyncOutcome.PERMANENT
+            else -> TokenSyncOutcome.RETRYABLE
+        }
         if (transport == PushTransport.LEGACY) {
             if (state is RegistryState.LegacyPending) return TokenSyncOutcome.DISABLED
             val c = legacyClient(settings, existing?.deviceId)
             if (existing == null) {
                 val reg = c.registerFcmDevice(token).map { it.device_id }
-                return reg.fold({ id -> registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
+                // replace any prior enrollment (incl. orphaned v1 secret) atomically under the lifecycle lock
+                return reg.fold({ id -> registry.clear(); registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
             }
             val update = c.updateFcmToken(token)
             val err = update.exceptionOrNull()
             when {
                 update.isSuccess -> { registry.save(existing.deviceId, token, existing.hermesOrigin, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); TokenSyncOutcome.UPDATED }
-                StaleDeviceFallback.isConfirmedNotFound(err) -> c.registerFcmDevice(token).map { it.device_id }.fold({ id -> registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED }, { failure(it) })
+                StaleDeviceFallback.isConfirmedNotFound(err) -> c.registerFcmDevice(token).map { it.device_id }.fold({ id ->
+                    // replace any prior enrollment (incl. orphaned v1 secret) atomically under the lifecycle lock
+                    registry.clear(); registry.save(id, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(PushProtocol.LEGACY); schedulePendingSync(context); TokenSyncOutcome.REGISTERED
+                }, { failure(it) })
                 else -> failure(err!!)
             }
         }
@@ -140,9 +148,13 @@ object PushIngress {
         return when (val action = if (state is RegistryState.LegacyPending) EnrollmentAction.RegisterFresh(false) else EnrollmentPolicy.decide(PushTransport.V1, existing != null, hasSecret)) {
             EnrollmentAction.None -> TokenSyncOutcome.PERMANENT
             is EnrollmentAction.RegisterFresh -> { if (action.legacyRevokeFirst && existing != null) runCatching { EventClient(existing.hermesOrigin, existing.apiKey, existing.deviceId).revokeDevice() }; registerFresh(legacyClaim) }
-            EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, settings.baseUrl, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
+            EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, existing.hermesOrigin, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
-                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> { registry.clear(); registerFresh() }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
+                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> {
+                    // REENROLL abandons the previous device without revoke (secret is required and no longer valid);
+                    // the remote row is orphaned by design — see docs/fcm-v1-reconciliation/05-threat-model.md
+                    registry.clear(); registerFresh()
+                }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
     }
@@ -151,13 +163,19 @@ object PushIngress {
         schedulePendingSync(context)
         val prefs = PushPrefs(context)
         if (!prefs.isEnabled()) return
-        if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return
+        if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) {
+            // Force-stop cancels scheduled WorkManager jobs; re-arm the pending
+            // revoke/cleanup so the persisted flags cannot block forever.
+            FcmRevokeWorker.schedule(context)
+            return
+        }
         val state = prefs.registrationState.first()
         if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
     }
 
     suspend fun schedulePendingSync(context: Context) {
         val prefs = PushPrefs(context); if (!prefs.isEnabled()) return
+        if (prefs.isPendingRevoke() || prefs.isPendingCredentialClear()) return
         val settings = SettingsStore(context).settings.first(); if (!settings.isConfigured) return
         if ((DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration == null) return
         WorkManager.getInstance(context).enqueueUniqueWork("hermes-pending-sync", ExistingWorkPolicy.KEEP, OneTimeWorkRequestBuilder<FcmPendingWorker>().setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
