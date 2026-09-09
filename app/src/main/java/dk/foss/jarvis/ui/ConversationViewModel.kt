@@ -9,7 +9,7 @@ import androidx.lifecycle.viewModelScope
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.JarvisSettings
 import dk.foss.jarvis.data.SettingsStore
-import dk.foss.jarvis.hermes.HermesClient
+import dk.foss.jarvis.hermes.*
 import dk.foss.jarvis.voice.AndroidTts
 import dk.foss.jarvis.voice.SpeechInput
 import dk.foss.jarvis.voice.TtsEngine
@@ -180,16 +180,44 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private fun think(userText: String) {
         val myTurn = turn
         hint.value = null
-        // Pipeline state was already cleared by beginTurn(); only the stream-status
-        // flags are new for this thinking phase.
         state.value = ConvState.Thinking
         working.value = true
         main.postDelayed(stallIndicator, STALL_MS)
         repo.addMessage("user", userText)
-        val requestHistory = repo.historyForRequest()
 
         val s = settings ?: return
         val client = HermesClient(s.baseUrl, s.apiKey)
+        val origin = originIdentity(s.baseUrl)
+        val hasMessages = repo.messages.any { !it.isError }
+
+        // Resolve caps in a coroutine to decide transport
+        viewModelScope.launch {
+            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
+
+            when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
+                is ChatTransportDecision.Blocked -> {
+                    onMain {
+                        error.value = d.reason
+                        goIdle()
+                    }
+                    return@launch
+                }
+                is ChatTransportDecision.Unavailable -> {
+                    onMain {
+                        error.value = d.reason
+                        goIdle()
+                    }
+                    return@launch
+                }
+                is ChatTransportDecision.Legacy -> sendLegacy(client, myTurn)
+                is ChatTransportDecision.Sessions -> sendSessions(client, d.features, myTurn, s.baseUrl)
+            }
+        }
+    }
+
+    private fun sendLegacy(client: HermesClient, myTurn: Int) {
+        val requestHistory = repo.historyForRequest()
+
         source = client.streamChat(requestHistory, repo.sessionId, object : HermesClient.StreamCallbacks {
             override fun onDelta(textDelta: String) = onMain {
                 if (turn == myTurn) onTextDelta(textDelta)
@@ -209,7 +237,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 working.value = false
                 stalled.value = false
                 toolLabel.value = null
-                // flush whatever's left as the final sentence
                 val rest = sentenceBuffer.toString().trim()
                 sentenceBuffer.setLength(0)
                 if (rest.isNotEmpty()) enqueueSpeech(rest)
@@ -230,6 +257,139 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 goIdle()
             }
         })
+    }
+
+    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, myTurn: Int, baseUrl: String) {
+        val userText = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text ?: ""
+
+        // If no server session yet, create one first
+        if (repo.sessionId.isNullOrEmpty()) {
+            val titleForSession = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text?.take(60) ?: "Conversation"
+            val createResult = client.createSession(titleForSession)
+            createResult.fold(
+                onSuccess = { sid ->
+                    if (turn != myTurn) return@fold
+                    repo.bindSession(originIdentity(baseUrl), sid, ChatTransportKind.SESSIONS)
+                    // Send the turn on the new session
+                    if (features.session_chat_streaming) {
+                        startSessionStreaming(client, repo.sessionId!!, userText, myTurn)
+                    } else {
+                        sendSessionTurnNonStreaming(client, repo.sessionId!!, userText, myTurn)
+                    }
+                },
+                onFailure = {
+                    if (turn != myTurn) return@fold
+                    onMain {
+                        error.value = "Couldn't start a Hermes session: ${it.message?.take(120)}"
+                        goIdle()
+                    }
+                }
+            )
+            // If create failed or turn changed, don't proceed
+            return
+        }
+
+        // Session already exists — send the turn directly
+        if (features.session_chat_streaming) {
+            startSessionStreaming(client, repo.sessionId!!, userText, myTurn)
+        } else {
+            sendSessionTurnNonStreaming(client, repo.sessionId!!, userText, myTurn)
+        }
+    }
+
+    private fun startSessionStreaming(client: HermesClient, sid: String, userText: String, myTurn: Int) {
+        source = client.streamSessionTurn(sid, userText, object : HermesClient.StreamCallbacks {
+            override fun onDelta(textDelta: String) = onMain {
+                if (turn != myTurn) return@onMain
+                onTextDelta(textDelta)
+            }
+
+            override fun onFinalContent(text: String) = onMain {
+                if (turn != myTurn) return@onMain
+                // Replace the accumulated text exactly once (no duplication)
+                reply.value = text
+                sentenceBuffer.setLength(0)
+                sentenceBuffer.append(text)
+                extractSentences()
+                pendingText.value = ""
+            }
+
+            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
+                if (turn != myTurn) return@onMain
+                toolLabel.value = if (running) (label ?: tool) else null
+            }
+
+            override fun onComplete() = onMain {
+                if (turn != myTurn) return@onMain
+                main.removeCallbacks(idleFlush)
+                main.removeCallbacks(stallIndicator)
+                working.value = false
+                stalled.value = false
+                toolLabel.value = null
+                val rest = sentenceBuffer.toString().trim()
+                sentenceBuffer.setLength(0)
+                if (rest.isNotEmpty()) enqueueSpeech(rest)
+                pendingText.value = ""
+                if (reply.value.isNotBlank()) repo.addMessage("assistant", reply.value)
+                viewModelScope.launch { repo.persist() }
+                streamDone = true
+                pump()
+            }
+
+            override fun onError(message: String) = onMain {
+                if (turn != myTurn) return@onMain
+                main.removeCallbacks(stallIndicator)
+                working.value = false
+                stalled.value = false
+                toolLabel.value = null
+                val hermesErr = message as? HermesHttpError
+                if (hermesErr?.isSessionMissing == true) {
+                    error.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                } else if (hermesErr?.isAuth == true) {
+                    error.value = "Authentication failed (401/403). Check the API key in Settings."
+                } else {
+                    error.value = message
+                }
+                goIdle()
+            }
+        })
+    }
+
+    private suspend fun sendSessionTurnNonStreaming(client: HermesClient, sid: String, userText: String, myTurn: Int) {
+        val result = client.sendSessionTurn(sid, userText)
+        onMain {
+            if (turn != myTurn) return@onMain
+            result.fold(
+                onSuccess = { turnResult ->
+                    val text = turnResult.text ?: "⚠️ No response content"
+                    if (text.startsWith("⚠️")) {
+                        error.value = text
+                        goIdle()
+                    } else {
+                        reply.value = text
+                        repo.addMessage("assistant", reply.value)
+                        sentenceBuffer.setLength(0)
+                        sentenceBuffer.append(text)
+                        extractSentences()
+                        streamDone = true
+                        pendingText.value = ""
+                        viewModelScope.launch { repo.persist() }
+                        pump()
+                    }
+                },
+                onFailure = {
+                    val hermesErr = it as? HermesHttpError
+                    if (hermesErr?.isSessionMissing == true) {
+                        error.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                    } else if (hermesErr?.isAuth == true) {
+                        error.value = "Authentication failed (401/403). Check the API key in Settings."
+                    } else {
+                        error.value = it.message?.take(120) ?: "Session turn failed"
+                    }
+                    goIdle()
+                }
+            )
+        }
     }
 
     /** A token arrived: show it, and speak as soon as a full sentence is available. */

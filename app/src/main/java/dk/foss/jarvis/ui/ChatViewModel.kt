@@ -8,8 +8,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.SettingsStore
-import dk.foss.jarvis.hermes.HermesClient
-import dk.foss.jarvis.hermes.ModelOptionsPayload
+import dk.foss.jarvis.hermes.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.sse.EventSource
@@ -30,25 +33,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Label of the tool Hermes is running right now, from hermes.tool.progress frames. */
     val activity = mutableStateOf<String?>(null)
 
-    // --- per-conversation model selection (server-authoritative) ---
-    // Hermes owns the model catalog and the per-session override. Android only
-    // lists what the server advertises and pins it via the session model API;
-    // it never routes or guesses provider/model ids itself.
+    // --- transport-aware states ---
+    val sendBlocked = mutableStateOf<String?>(null)
+    val transportNotice = mutableStateOf<String?>(null)
+    val effectiveRoute = mutableStateOf<EffectiveRoute?>(null)
 
-    /** Display label shown on the compact model chip, e.g. "Automatic" or a model id. */
+    // --- per-conversation model selection (server-authoritative) ---
+    private var modelSelection = ModelSelection()
     val modelLabel = mutableStateOf("Automatic")
-    /** Default model the server would use when no override is set (its "Automatic" choice). */
     val modelDefault = mutableStateOf<String?>(null)
-    /** Options returned by GET /api/model/options (flattened), plus the implicit Automatic. */
     val modelOptions = mutableStateOf<List<ModelOption>>(emptyList())
     val modelPickerOpen = mutableStateOf(false)
     val modelLoading = mutableStateOf(false)
     val modelError = mutableStateOf<String?>(null)
 
     /** Model requested while no server session existed yet; applied on first session id. */
-    private var pendingOption: ModelOption? = null
+    var pendingOption: ModelOption? = null
 
     private var currentSource: EventSource? = null
+    private var activeTurnJob: kotlinx.coroutines.Job? = null
+    private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** Check selectorAvailable: model_options && session_model_lock. */
+    val modelSelectorAvailable get() = modelSelection.state.selectorAvailable
+    val modelLocked get() = modelSelection.state.locked
+    val clearSupported get() = modelSelection.state.clearSupported
 
     /** Fetch the Hermes catalog and, when a session exists, the current pinned model. */
     fun refreshModel() {
@@ -57,6 +66,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
             modelLoading.value = true
             val client = HermesClient(s.baseUrl, s.apiKey)
+            val origin = originIdentity(s.baseUrl)
+            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
+
+            if (caps.features.model_options && caps.features.session_model_lock) {
+                modelSelection.onSelectorAvailability(
+                    modelOptions = true,
+                    lock = caps.features.session_model_lock,
+                    clear = caps.features.session_model_clear,
+                )
+            } else {
+                modelSelection.onSelectorAvailability(
+                    modelOptions = caps.features.model_options,
+                    lock = caps.features.session_model_lock,
+                    clear = caps.features.session_model_clear,
+                )
+            }
+
             client.getModelOptions().fold(
                 onSuccess = {
                     modelOptions.value = flattenModels(it)
@@ -82,28 +108,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             // Reflect the choice optimistically; the server confirms below.
             val chosenLabel = option?.label ?: "Automatic"
-            val client = HermesClient(s.baseUrl, s.apiKey)
+            modelLabel.value = chosenLabel
+            modelPickerOpen.value = false
 
             if (sid.isNullOrEmpty()) {
-                // No server session yet — remember the intent; it is applied on the
-                // first turn when X-Hermes-Session-Id arrives.
+                // No server session yet — remember the intent.
                 if (option != null) pendingOption = option
-                modelLabel.value = chosenLabel
-                modelPickerOpen.value = false
                 return@launch
             }
 
+            // Check selector availability first
+            if (!modelSelection.state.selectorAvailable) {
+                modelError.value = "Model selection is not supported by this server."
+                modelLabel.value = modelSelection.state.label
+                return@launch
+            }
+
+            val client = HermesClient(s.baseUrl, s.apiKey)
             val result = if (option == null) client.clearSessionModel(sid)
             else client.setSessionModel(sid, option.modelId, option.providerSlug)
 
             result.fold(
                 onSuccess = {
-                    modelLabel.value = chosenLabel
+                    if (option == null) {
+                        // Clear
+                        modelSelection.onClearAck(it.runtime)
+                        modelLabel.value = "Automatic"
+                    } else {
+                        // Set
+                        modelSelection.onSetAck(chosenLabel, it.runtime)
+                        modelLabel.value = chosenLabel
+                    }
+                    effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
                     modelPickerOpen.value = false
                 },
                 onFailure = {
-                    // No silent fallback: a failed model change stays visible as an error
-                    // and the sheet stays open so the user can retry or dismiss.
+                    modelSelection.onRejected()
+                    modelLabel.value = modelSelection.state.label
                     modelError.value = "Couldn't change model: ${it.message?.take(120)}"
                 },
             )
@@ -124,9 +165,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             client.setSessionModel(sessionId, pending.modelId, pending.providerSlug).fold(
                 onSuccess = {
                     modelLabel.value = pending.label
+                    effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
                 },
                 onFailure = {
-                    // The override did not stick server-side; report honestly.
                     modelError.value = "Model couldn't be pinned to this session: ${it.message?.take(120)}"
                     syncLabelWithServer(client)
                 },
@@ -138,18 +179,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun syncLabelWithServer(client: HermesClient) {
         val sid = repo.sessionId
         if (sid.isNullOrEmpty()) {
-            // No session yet → show the server default so the chip is honest.
-            modelLabel.value = modelDefault.value?.let { "Automatic · $it" } ?: "Automatic"
+            modelLabel.value = modelSelection.state.label
             return
         }
         client.getSession(sid).fold(
             onSuccess = { env ->
-                val pinned = env.session.model
-                if (pinned.isNullOrBlank()) {
-                    modelLabel.value = modelDefault.value?.let { "Automatic · $it" } ?: "Automatic"
-                } else {
-                    modelLabel.value = pinned
-                }
+                modelSelection.onSessionInsight(env.session.model, modelDefault.value)
+                modelLabel.value = modelSelection.state.label
             },
             onFailure = { /* keep whatever the chip currently shows; Hermes unreachable */ },
         )
@@ -174,72 +210,293 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             repo.persist()
             repo.startNew()
         }
+        modelSelection.reset()
+        effectiveRoute.value = null
+        sendBlocked.value = null
+        transportNotice.value = null
     }
 
     fun cancel() {
         currentSource?.cancel()
         currentSource = null
+        activeTurnJob?.cancel()
+        activeTurnJob = null
         isStreaming.value = false
         activity.value = null
     }
 
     fun dismissNotConfigured() { notConfigured.value = false }
 
-    fun send(userText: String) {
+    /** Called from ChatScreen after a conversation is opened/switched. */
+    fun onConversationResumed() {
+        viewModelScope.launch {
+            val s = settingsStore.settings.first()
+            if (!s.isConfigured) return@launch
+            val origin = originIdentity(s.baseUrl)
+            if (repo.transport == ChatTransportKind.SESSIONS && repo.origin != origin) {
+                sendBlocked.value = "This conversation is bound to a different server. Start a new conversation from History to continue."
+            } else {
+                sendBlocked.value = null
+            }
+            if (repo.transport == ChatTransportKind.LEGACY_CHAT) {
+                transportNotice.value = "This conversation uses the legacy chat transport."
+            } else {
+                transportNotice.value = null
+            }
+        }
+    }
+
+    /** Public entry point: routes through the transport-aware decision engine. */
+    fun sendUserMessage(userText: String) {
         val text = userText.trim()
         if (text.isEmpty() || isStreaming.value) return
 
-        viewModelScope.launch {
+        activeTurnJob = viewModelScope.launch {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { notConfigured.value = true; return@launch }
 
-            repo.addMessage("user", text)
-            val history = repo.historyForRequest()
-            val assistantIndex = repo.addMessage("assistant", "")
-            isStreaming.value = true
-            activity.value = null
-
             val client = HermesClient(s.baseUrl, s.apiKey)
-            currentSource = client.streamChat(history, repo.sessionId, object : HermesClient.StreamCallbacks {
-                override fun onDelta(textDelta: String) = onMain {
-                    repo.appendToMessage(assistantIndex, textDelta)
-                }
+            val origin = originIdentity(s.baseUrl)
+            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
+            val hasMessages = repo.messages.any { !it.isError }
 
-                override fun onSessionId(id: String) {
-                    repo.setSessionId(id)
-                    onSessionCaptured(id)
+            when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
+                is ChatTransportDecision.Blocked -> {
+                    appendSystemError(d.reason)
+                    return@launch
                 }
-
-                override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
-                    activity.value = if (running) (label ?: tool) else null
+                is ChatTransportDecision.Unavailable -> {
+                    sendBlocked.value = d.reason
+                    appendSystemError(d.reason)
+                    return@launch
                 }
+                is ChatTransportDecision.Legacy -> sendLegacy(client)
+                is ChatTransportDecision.Sessions -> sendSessions(client, d.features)
+            }
+        }
+    }
 
-                override fun onComplete() = onMain {
-                    isStreaming.value = false
-                    currentSource = null
-                    activity.value = null
-                    viewModelScope.launch { repo.persist() }
+    // Keep the old send() for backward compatibility (it delegates to sendUserMessage)
+    @Deprecated("Use sendUserMessage", replaceWith = ReplaceWith("sendUserMessage(text)"))
+    fun send(userText: String) = sendUserMessage(userText)
+
+    private suspend fun sendLegacy(client: HermesClient) {
+        repo.addMessage("user", messages.last { it.role == "user" && !it.isError }.text)
+        val history = repo.historyForRequest()
+        val assistantIndex = repo.addMessage("assistant", "")
+        isStreaming.value = true
+        activity.value = null
+
+        currentSource = client.streamChat(history, repo.sessionId, object : HermesClient.StreamCallbacks {
+            override fun onDelta(textDelta: String) = onMain {
+                repo.appendToMessage(assistantIndex, textDelta)
+            }
+
+            override fun onSessionId(id: String) {
+                repo.setSessionId(id)
+                onSessionCaptured(id)
+            }
+
+            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
+                activity.value = if (running) (label ?: tool) else null
+            }
+
+            override fun onComplete() = onMain {
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch {
+                    if (repo.transport == null) repo.markTransport(ChatTransportKind.LEGACY_CHAT)
+                    repo.markUsed()
+                    repo.persist()
                 }
+            }
 
-                override fun onError(message: String) = onMain {
+            override fun onError(message: String) = onMain {
+                val cur = messages.getOrNull(assistantIndex)
+                if (cur != null && cur.text.isEmpty()) {
+                    repo.replaceMessage(assistantIndex, "⚠️ $message", isError = true)
+                } else {
+                    repo.addMessage("assistant", "⚠️ $message", isError = true)
+                }
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch { repo.persist() }
+            }
+        })
+    }
+
+    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures) {
+        var assistantIndex: Int
+
+        // 1. Create session if needed (BEFORE adding any user message)
+        if (repo.sessionId == null) {
+            val titleForSession = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text?.take(60) ?: "Conversation"
+            val createResult = client.createSession(titleForSession)
+            createResult.fold(
+                onSuccess = { sid ->
+                    repo.bindSession(originIdentity(settingsStore.settings.first().baseUrl), sid, ChatTransportKind.SESSIONS)
+                    // Apply pending option if any
+                    pendingOption?.let { opt ->
+                        client.setSessionModel(sid, opt.modelId, opt.providerSlug).fold(
+                            onSuccess = {
+                                modelSelection.onSetAck(opt.label, it.runtime)
+                                modelLabel.value = opt.label
+                                effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
+                            },
+                            onFailure = { modelError.value = "Couldn't pin model to session: ${it.message?.take(120)}" },
+                        )
+                    }
+                },
+                onFailure = {
+                    appendSystemError("Couldn't start a Hermes session: ${it.message?.take(120) ?: "unknown"}")
+                    return@sendSessions
+                }
+            )
+        }
+
+        // 2. Now add the user message and placeholder
+        val lastUserMsg = repo.messages.last { it.role == "user" && !it.isError }
+        val userText = lastUserMsg.text
+        // We already added the user message in sendUserMessage guard... but we need to re-add
+        // Actually, sendUserMessage only guards, it doesn't add. Let me fix: we need to add in sendSessions.
+        // Wait — looking at the old send(), it did repo.addMessage("user", text). sendUserMessage doesn't.
+        // So we add here.
+        repo.addMessage("user", userText)
+        assistantIndex = repo.addMessage("assistant", "")
+        isStreaming.value = true
+        activity.value = null
+
+        val sid = repo.sessionId ?: return
+
+        if (features.session_chat_streaming) {
+            sendSessionStreaming(client, sid, userText, assistantIndex)
+        } else {
+            sendSessionTurnNonStreaming(client, sid, userText, assistantIndex)
+        }
+    }
+
+    private fun sendSessionStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
+        currentSource = client.streamSessionTurn(sid, userText, object : HermesClient.StreamCallbacks {
+            override fun onDelta(textDelta: String) = onMain {
+                repo.appendToMessage(assistantIndex, textDelta)
+            }
+
+            override fun onFinalContent(text: String) = onMain {
+                // Idempotent replacement — ensures no duplication
+                repo.replaceMessage(assistantIndex, text)
+            }
+
+            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
+                activity.value = if (running) (label ?: tool) else null
+            }
+
+            override fun onRuntime(info: RuntimeInfo) = onMain {
+                effectiveRoute.value = EffectiveRoute.fromRuntime(info)
+                if (info.model_lock == "accepted") {
+                    modelSelection.onSetAck(info.model ?: "Automatic", info)
+                    modelLabel.value = modelSelection.state.label
+                }
+            }
+
+            override fun onComplete() = onMain {
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch {
+                    repo.markUsed()
+                    repo.persist()
+                }
+            }
+
+            override fun onError(message: String) = onMain {
+                val err = (currentSource as? okhttp3.sse.EventSource)?.let { null } // We classify below
+                val hermesErr = message.split(":").firstOrNull()?.let {
+                    runCatching { it.toInt() }.getOrNull()
+                }
+                val cleanMsg = message.replace("^HTTP \\d+: ?".toRegex(), "")
+                if (message.contains("401") || message.contains("403") || message.contains("gateway_auth_failed")) {
+                    val errMsg = "Authentication failed (${cleanMsg.take(40)}). Check the API key in Settings."
                     val cur = messages.getOrNull(assistantIndex)
                     if (cur != null && cur.text.isEmpty()) {
-                        repo.replaceMessage(assistantIndex, "⚠️ $message", isError = true)
+                        repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
                     } else {
-                        repo.addMessage("assistant", "⚠️ $message", isError = true)
+                        repo.addMessage("assistant", "⚠️ $errMsg", isError = true)
+                    }
+                } else if (message.contains("404") || message.contains("session_not_found") || message.contains("no longer exists")) {
+                    val errMsg = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                    sendBlocked.value = errMsg
+                    val cur = messages.getOrNull(assistantIndex)
+                    if (cur != null && cur.text.isEmpty()) {
+                        repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
+                    } else {
+                        repo.addMessage("assistant", "⚠️ $errMsg", isError = true)
+                    }
+                } else {
+                    val cur = messages.getOrNull(assistantIndex)
+                    if (cur != null && cur.text.isEmpty()) {
+                        repo.replaceMessage(assistantIndex, "⚠️ $cleanMsg", isError = true)
+                    } else {
+                        repo.addMessage("assistant", "⚠️ $cleanMsg", isError = true)
+                    }
+                }
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch { repo.persist() }
+            }
+        })
+    }
+
+    private suspend fun sendSessionTurnNonStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
+        val result = client.sendSessionTurn(sid, userText)
+        onMain {
+            result.fold(
+                onSuccess = { turnResult ->
+                    val text = turnResult.text ?: "⚠️ No response content"
+                    if (text.startsWith("⚠️")) {
+                        repo.replaceMessage(assistantIndex, text, isError = true)
+                    } else {
+                        repo.replaceMessage(assistantIndex, text)
+                    }
+                    effectiveRoute.value = EffectiveRoute.fromRuntime(turnResult.runtime)
+                    isStreaming.value = false
+                    activity.value = null
+                    viewModelScope.launch {
+                        repo.markUsed()
+                        repo.persist()
+                    }
+                },
+                onFailure = {
+                    val msg = it.message?.take(120) ?: "Session turn failed"
+                    val hermesErr = it as? HermesHttpError
+                    if (hermesErr?.isSessionMissing == true) {
+                        val errMsg = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                        sendBlocked.value = errMsg
+                        repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
+                    } else if (hermesErr?.isAuth == true) {
+                        val errMsg = "Authentication failed (401/403). Check the API key in Settings."
+                        repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
+                    } else {
+                        repo.replaceMessage(assistantIndex, "⚠️ $msg", isError = true)
                     }
                     isStreaming.value = false
-                    currentSource = null
                     activity.value = null
                     viewModelScope.launch { repo.persist() }
                 }
-            })
+            )
         }
+    }
+
+    private fun appendSystemError(msg: String) {
+        repo.addMessage("assistant", "⚠️ $msg", isError = true)
     }
 
     override fun onCleared() {
         cancel()
-        repo.persistAsync() // viewModelScope is already cancelled here
+        uiScope.cancel()
+        repo.persistAsync()
         super.onCleared()
     }
 }

@@ -117,8 +117,12 @@ fun ChatScreen(
                     streaming   = streaming,
                     activity    = vm.activity.value,
                     modelLabel  = vm.modelLabel.value,
+                    modelSelectorAvailable = vm.modelSelectorAvailable,
+                    effectiveRoute = vm.effectiveRoute.value,
+                    sendBlocked = vm.sendBlocked.value,
+                    transportNotice = vm.transportNotice.value,
                     onSend      = {
-                        vm.send(input)
+                        vm.sendUserMessage(input)
                         input = ""
                     },
                     onStop      = { vm.cancel() },
@@ -145,6 +149,9 @@ fun ChatScreen(
                     selectedLabel = vm.modelLabel.value,
                     loading       = vm.modelLoading.value,
                     error         = vm.modelError.value,
+                    locked        = vm.modelLocked,
+                    clearSupported = vm.clearSupported,
+                    effective     = vm.effectiveRoute.value,
                     onPick        = { option -> vm.chooseModel(option) },
                     onDismiss     = { vm.closeModelPicker() },
                 )
@@ -335,6 +342,10 @@ private fun HelmChatContent(
     streaming: Boolean,
     activity: String?,
     modelLabel: String,
+    modelSelectorAvailable: Boolean,
+    effectiveRoute: EffectiveRoute?,
+    sendBlocked: String?,
+    transportNotice: String?,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onPickModel: () -> Unit,
@@ -395,11 +406,42 @@ private fun HelmChatContent(
             )
         }
 
-        // Model selector row (flat, technical)
-        HelmModelRow(
-            label   = modelLabel,
-            onClick = onPickModel,
-        )
+        // Send blocked notice
+        sendBlocked?.let { reason ->
+            Text(
+                "⚠️ $reason",
+                fontFamily = RobotoSans,
+                fontWeight = FontWeight.Normal,
+                fontSize = 12.sp,
+                color = Color(0xFFFF5F56),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // Transport notice
+        transportNotice?.let { notice ->
+            Text(
+                notice,
+                fontFamily = RobotoMono,
+                fontWeight = FontWeight.Normal,
+                fontSize = 11.sp,
+                color = HelmWhite35,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+        }
+
+        // Model selector row (flat, technical) — only when selector is available
+        if (modelSelectorAvailable) {
+            HelmModelRow(
+                label        = modelLabel,
+                effective    = effectiveRoute,
+                onClick      = onPickModel,
+            )
+        }
 
         // Composer
         HelmComposer(
@@ -574,31 +616,49 @@ private fun HelmComposer(
 // design-nan.md §19: flat technical row, Roboto Mono model-id
 
 @Composable
-private fun HelmModelRow(label: String, onClick: () -> Unit) {
-    Row(
+private fun HelmModelRow(
+    label: String,
+    effective: EffectiveRoute?,
+    onClick: () -> Unit,
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
-        Text(
-            text = label,
-            fontFamily = RobotoMono,
-            fontWeight = FontWeight.Normal,
-            fontSize = 12.sp,
-            color = HelmWhite55,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = "▾",
-            fontFamily = RobotoMono,
-            fontSize = 12.sp,
-            color = HelmWhite35,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                fontFamily = RobotoMono,
+                fontWeight = FontWeight.Normal,
+                fontSize = 12.sp,
+                color = HelmWhite55,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "▾",
+                fontFamily = RobotoMono,
+                fontSize = 12.sp,
+                color = HelmWhite35,
+            )
+        }
+        if (effective != null && effective.model != null) {
+            Text(
+                text = "Using: ${effective.model} · route: ${effective.routeSource}",
+                fontFamily = RobotoMono,
+                fontWeight = FontWeight.Normal,
+                fontSize = 10.sp,
+                color = HelmWhite35,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -612,6 +672,9 @@ private fun HelmModelSheet(
     selectedLabel: String,
     loading: Boolean,
     error: String?,
+    locked: Boolean,
+    clearSupported: Boolean,
+    effective: EffectiveRoute?,
     onPick: (ModelOption?) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -710,12 +773,32 @@ private fun HelmModelSheet(
                             }
                         }
 
+                        // Effective route info (read-only)
+                        effective?.let { eroute ->
+                            item {
+                                Text(
+                                    text = "Using: ${eroute.model} · route: ${eroute.routeSource}",
+                                    fontFamily = RobotoMono,
+                                    fontWeight = FontWeight.Normal,
+                                    fontSize = 11.sp,
+                                    color = HelmWhite35,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                )
+                            }
+                            item {
+                                HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
+                            }
+                        }
+
+                        // Automatic row — disabled when locked and server cannot clear
+                        val automaticDisabled = locked && !clearSupported
                         item {
                             ModelOptionItem(
                                 label      = "Automatic",
-                                caption    = "Let Hermes choose",
+                                caption    = if (automaticDisabled) "Session model is locked — start a new conversation for Automatic." else "Let Hermes choose",
                                 selected   = selectedLabel.startsWith("Automatic"),
-                                onClick    = { onPick(null) },
+                                onClick    = { if (!automaticDisabled) onPick(null) },
+                                enabled    = !automaticDisabled,
                             )
                         }
                         item {
@@ -751,11 +834,17 @@ private fun HelmModelSheet(
 }
 
 @Composable
-private fun ModelOptionItem(label: String, caption: String?, selected: Boolean, onClick: () -> Unit) {
+private fun ModelOptionItem(
+    label: String,
+    caption: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -772,7 +861,7 @@ private fun ModelOptionItem(label: String, caption: String?, selected: Boolean, 
                     text = caption,
                     fontFamily = RobotoMono,
                     fontSize = 12.sp,
-                    color = HelmWhite35,
+                    color = if (enabled) HelmWhite35 else HelmWhite35.copy(alpha = 0.4f),
                 )
             }
         }

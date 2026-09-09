@@ -7,9 +7,7 @@ import androidx.lifecycle.viewModelScope
 import dk.foss.jarvis.data.ConversationMeta
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.SettingsStore
-import dk.foss.jarvis.hermes.ChatMessage
-import dk.foss.jarvis.hermes.HermesClient
-import dk.foss.jarvis.hermes.SessionSummary
+import dk.foss.jarvis.hermes.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -99,6 +97,31 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.persist()
             repo.open(id)
+            // If this is a SESSIONS conversation bound to the current server,
+            // try to refresh messages from the server (authoritative copy).
+            val s = settingsStore.settings.first()
+            if (s.isConfigured && repo.transport == ChatTransportKind.SESSIONS &&
+                repo.sessionId != null && repo.origin == originIdentity(s.baseUrl)) {
+                val client = HermesClient(s.baseUrl, s.apiKey)
+                client.getSessionMessages(repo.sessionId!!).fold(
+                    onSuccess = { page ->
+                        val msgs = page.data
+                            .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
+                            .map { dk.foss.jarvis.hermes.ChatMessage(it.role, it.content) }
+                        if (msgs.isNotEmpty()) {
+                            repo.replaceAllMessages(msgs.map { dk.foss.jarvis.data.UiMessage(it.role, it.content) })
+                        }
+                    },
+                    onFailure = { err: Throwable ->
+                        val hermesErr = err as? HermesHttpError
+                        if (hermesErr?.isSessionMissing == true) {
+                            notice.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                        } else {
+                            notice.value = "Couldn't refresh history; showing saved copy."
+                        }
+                    }
+                )
+            }
             onReady()
         }
     }
@@ -108,20 +131,27 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { notice.value = "Configure Hermes in Settings first"; return@launch }
-            HermesClient(s.baseUrl, s.apiKey).getSessionMessages(serverSessionId).fold(
+            val client = HermesClient(s.baseUrl, s.apiKey)
+            val origin = originIdentity(s.baseUrl)
+
+            // Resolve capabilities to pick the right transport
+            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
+            val transport = if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
+
+            client.getSessionMessages(serverSessionId).fold(
                 onSuccess = { page ->
                     val msgs = page.data
                         .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
-                        .map { ChatMessage(it.role, it.content) }
+                        .map { dk.foss.jarvis.hermes.ChatMessage(it.role, it.content) }
                     if (msgs.isEmpty()) {
                         notice.value = "This session has no readable messages"
                         return@fold
                     }
                     repo.persist()
-                    repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs)
+                    repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs, origin = origin, transport = transport)
                     onReady()
                 },
-                onFailure = { notice.value = "Could not load session: ${it.message?.take(120)}" },
+                onFailure = { err: Throwable -> notice.value = "Could not load session: ${err.message?.take(120)}" },
             )
         }
     }
