@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
+/** Chat transport generation marker. Deliberately unrelated to the push PushProtocol enum and to FCM/device identity. */
 enum class ChatTransportKind { LEGACY_CHAT, SESSIONS }
 
 @Serializable data class SessionTurnRequest(val message: String)
@@ -16,7 +17,10 @@ enum class ChatTransportKind { LEGACY_CHAT, SESSIONS }
     val runtime: RuntimeInfo? = null,
 ) { val text: String? get() = content ?: message ?: assistant }
 
-data class HermesHttpError(val code: Int?, val rpcCode: String?, val rawBody: String?, override val message: String) : RuntimeException(message)
+data class HermesHttpError(val code: Int?, val rpcCode: String?, val rawBody: String?, override val message: String) : RuntimeException(message) {
+    val isAuth: Boolean get() = code == 401 || code == 403 || rpcCode == "gateway_auth_failed"
+    val isSessionMissing: Boolean get() = code == 404 && (rpcCode == "session_not_found" || rawBody?.contains("session_not_found") == true)
+}
 
 fun parseErrorBody(body: String): Pair<String?, String?> = runCatching {
     val obj = HermesJson.parseToJsonElement(body).jsonObject
@@ -35,23 +39,24 @@ fun parseErrorBody(body: String): Pair<String?, String?> = runCatching {
 
 private val JsonPrimitive.contentOrNull get() = runCatching { content }.getOrNull()
 
-sealed class TransportDecision {
-    data class Sessions(val features: ServerFeatures) : TransportDecision()
-    object Legacy : TransportDecision()
-    data class Blocked(val reason: String) : TransportDecision()
-    data class Unavailable(val reason: String) : TransportDecision()
+/** Decision returned by [ChatTransportSelector.decide] about which chat transport to use. */
+sealed class ChatTransportDecision {
+    data class Sessions(val features: ServerFeatures) : ChatTransportDecision()
+    object Legacy : ChatTransportDecision()
+    data class Blocked(val reason: String) : ChatTransportDecision()
+    data class Unavailable(val reason: String) : ChatTransportDecision()
 }
 
 object ChatTransportSelector {
-    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): TransportDecision = when (convTransport) {
-        ChatTransportKind.LEGACY_CHAT -> TransportDecision.Legacy
-        ChatTransportKind.SESSIONS -> if (convOrigin != currentOrigin) TransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else TransportDecision.Sessions(features?.features ?: ServerFeatures())
+    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): ChatTransportDecision = when (convTransport) {
+        ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Legacy
+        ChatTransportKind.SESSIONS -> if (convOrigin != currentOrigin) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
         null -> when {
-            hasMessages -> TransportDecision.Legacy
-            features == null || features.state == CapabilityState.UNKNOWN -> TransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
-            features.state == CapabilityState.UNSUPPORTED -> TransportDecision.Legacy
-            features.features.session_chat -> TransportDecision.Sessions(features.features)
-            else -> TransportDecision.Legacy
+            hasMessages -> ChatTransportDecision.Legacy
+            features == null || features.state == CapabilityState.UNKNOWN -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
+            features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Legacy
+            features.features.session_chat -> ChatTransportDecision.Sessions(features.features)
+            else -> ChatTransportDecision.Legacy
         }
     }
 }

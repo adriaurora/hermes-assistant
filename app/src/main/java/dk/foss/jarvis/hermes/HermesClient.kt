@@ -253,7 +253,7 @@ class HermesClient(
                     "tool.started", "tool.progress", "tool.completed", "tool.failed" -> runCatching { HermesJson.decodeFromString(ToolProgress.serializer(), data) }.getOrNull()?.let { cb.onToolProgress(it.tool, it.label, type == "tool.started" || type == "tool.progress" || it.status.equals("running", true)) }
                     "run.completed" -> { runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).runtime }.getOrNull()?.let(cb::onRuntime); if (finished.compareAndSet(false, true)) cb.onComplete() }
                     "done" -> if (finished.compareAndSet(false, true)) cb.onComplete()
-                    "error" -> if (finished.compareAndSet(false, true)) cb.onError(runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).error ?: HermesJson.decodeFromString(SessionSseData.serializer(), data).message }.getOrNull() ?: parseErrorBody(data).second ?: data.take(200))
+                    "error" -> if (finished.compareAndSet(false, true)) cb.onError(runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).message ?: HermesJson.decodeFromString(SessionSseData.serializer(), data).error }.getOrNull() ?: parseErrorBody(data).second ?: data.take(200))
                 }
             }
             override fun onClosed(es: EventSource) { if (finished.compareAndSet(false, true)) cb.onComplete() }

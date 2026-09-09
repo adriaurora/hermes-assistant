@@ -7,10 +7,17 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /** Persists conversations as one JSON file each under filesDir/conversations/. */
-class ConversationStore(context: Context) {
+class ConversationStore {
 
-    private val dir = File(context.applicationContext.filesDir, "conversations").apply { mkdirs() }
+    internal val dir: File
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    constructor(context: Context) : this(File(context.applicationContext.filesDir, "conversations").apply { mkdirs() })
+
+    internal constructor(dir: File) {
+        this.dir = dir
+        dir.mkdirs()
+    }
 
     suspend fun save(conversation: Conversation) = withContext(Dispatchers.IO) {
         runCatching {
