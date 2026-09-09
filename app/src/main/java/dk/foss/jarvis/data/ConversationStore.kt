@@ -43,7 +43,7 @@ class ConversationStore(context: Context) {
             .mapNotNull { f ->
                 runCatching {
                     val c = json.decodeFromString(Conversation.serializer(), f.readText())
-                    ConversationMeta(c.id, c.title, c.updatedAt, c.messages.size, c.sessionId)
+                    ConversationMeta(c.id, c.title, c.updatedAt, c.messages.size, c.sessionId, c.transport, c.origin)
                 }.getOrNull()
             }
             .sortedByDescending { it.updatedAt }

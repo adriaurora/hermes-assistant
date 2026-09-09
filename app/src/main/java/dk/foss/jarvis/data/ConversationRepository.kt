@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import dk.foss.jarvis.hermes.ChatMessage
+import dk.foss.jarvis.hermes.ChatTransportKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,7 +16,7 @@ import java.util.UUID
  * text chat and voice modes so messages and the Hermes session id stay unified.
  * Persists to [ConversationStore] so conversations can be reopened and continued.
  */
-class ConversationRepository private constructor(private val store: ConversationStore) {
+class ConversationRepository internal constructor(private val store: ConversationStore) {
 
     // App-lifetime scope so a fire-and-forget save survives a ViewModel being cleared
     // (viewModelScope is cancelled BEFORE onCleared runs, which would drop the last save).
@@ -25,6 +26,12 @@ class ConversationRepository private constructor(private val store: Conversation
 
     // sessionId/dirty are written from the SSE callback thread and read on main.
     @Volatile var sessionId: String? = null
+        private set
+    @Volatile var transport: ChatTransportKind? = null
+        private set
+    @Volatile var origin: String? = null
+        private set
+    @Volatile var lastUsedAt: Long? = null
         private set
 
     private var activeId: String = UUID.randomUUID().toString()
@@ -36,6 +43,7 @@ class ConversationRepository private constructor(private val store: Conversation
         activeId = UUID.randomUUID().toString()
         messages.clear()
         sessionId = null
+        transport = null; origin = null; lastUsedAt = null
         title = ""
         createdAt = System.currentTimeMillis()
         dirty = false
@@ -47,6 +55,7 @@ class ConversationRepository private constructor(private val store: Conversation
         title = c.title
         createdAt = c.createdAt
         sessionId = c.sessionId
+        transport = c.transport; origin = c.origin; lastUsedAt = c.lastUsedAt
         messages.clear()
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
         dirty = false
@@ -57,14 +66,22 @@ class ConversationRepository private constructor(private val store: Conversation
      * session (history parity). The mirror binds to the server session id, so the
      * next request continues that session; it persists on the next save.
      */
-    fun importServerSession(sessionId: String, title: String, createdAtMs: Long, msgs: List<ChatMessage>) {
+    fun importServerSession(sessionId: String, title: String, createdAtMs: Long, msgs: List<ChatMessage>, origin: String? = null, transport: ChatTransportKind? = null) {
         startNew()
         this.sessionId = sessionId
         this.title = title.take(60)
         this.createdAt = createdAtMs
+        if (origin != null) this.origin = origin
+        if (transport != null) this.transport = transport
         messages.addAll(msgs.map { UiMessage(it.role, it.content) })
         dirty = true
     }
+
+    fun bindSession(origin: String, sessionId: String, transport: ChatTransportKind) { this.origin = origin; this.sessionId = sessionId; this.transport = transport; dirty = true }
+    fun markTransport(kind: ChatTransportKind) { transport = kind; dirty = true }
+    fun markUsed() { lastUsedAt = System.currentTimeMillis(); dirty = true }
+    fun lastUserTurnText(): String? = messages.lastOrNull { it.role == "user" && !it.isError }?.text
+    fun replaceAllMessages(items: List<UiMessage>) { messages.clear(); messages.addAll(items); dirty = true }
 
     fun setSessionId(id: String) {
         if (sessionId != id) { sessionId = id; dirty = true }
@@ -108,6 +125,9 @@ class ConversationRepository private constructor(private val store: Conversation
                 updatedAt = System.currentTimeMillis(),
                 sessionId = sessionId,
                 messages = messages.filter { !it.isError }.map { StoredMessage(it.role, it.text) },
+                transport = transport,
+                origin = origin,
+                lastUsedAt = lastUsedAt,
             ),
         )
         dirty = false

@@ -11,6 +11,8 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Talks to a Hermes `api_server`. This is the ONLY coupling to Hermes:
@@ -31,6 +33,8 @@ class HermesClient(
 
         fun onComplete() {}
         fun onError(message: String) {}
+        fun onFinalContent(text: String) {}
+        fun onRuntime(info: RuntimeInfo) {}
     }
 
     fun streamChat(
@@ -112,7 +116,7 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    throw RuntimeException("HTTP ${resp.code}: ${text.take(200).ifBlank { resp.message }}")
+                    throw httpError(resp.code, text, resp.message)
                 }
                 HermesJson.decodeFromString(ModelsResponse.serializer(), text).data.map { it.id }
             }
@@ -143,7 +147,7 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    throw RuntimeException("HTTP ${resp.code}: ${text.take(200).ifBlank { resp.message }}")
+                    throw httpError(resp.code, text, resp.message)
                 }
                 HermesJson.decodeFromString(SessionDeleted.serializer(), text)
             }
@@ -178,7 +182,7 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    throw RuntimeException("HTTP ${resp.code}: ${text.take(200).ifBlank { resp.message }}")
+                    throw httpError(resp.code, text, resp.message)
                 }
                 HermesJson.decodeFromString(ModelLockResponse.serializer(), text)
             }
@@ -198,9 +202,80 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    throw RuntimeException("HTTP ${resp.code}: ${text.take(200).ifBlank { resp.message }}")
+                    throw httpError(resp.code, text, resp.message)
                 }
                 HermesJson.decodeFromString(ModelLockResponse.serializer(), text)
+            }
+        }
+    }
+
+    /** GET /v1/capabilities — feature discovery. */
+    suspend fun getCapabilities(): Result<ServerFeatures> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder().url("$baseUrl/v1/capabilities").addHeader("Authorization", "Bearer $apiKey").get().build()
+            Http.base.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
+                parseCapabilities(text)
+            }
+        }
+    }
+
+    suspend fun createSession(title: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = HermesJson.encodeToString(SessionCreateRequest.serializer(), SessionCreateRequest(title))
+            val req = Request.Builder().url("$baseUrl/api/sessions").addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(JSON_MEDIA)).build()
+            Http.base.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
+                runCatching { HermesJson.decodeFromString(SessionEnvelope.serializer(), text).session.id.takeIf { it.isNotEmpty() } ?: error("missing session id") }
+                    .recoverCatching { HermesJson.decodeFromString(SessionIdOnly.serializer(), text).id }.getOrThrow()
+            }
+        }
+    }
+
+    fun streamSessionTurn(sessionId: String, message: String, cb: StreamCallbacks): EventSource {
+        val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
+        val builder = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat/stream")
+            .addHeader("Authorization", "Bearer $apiKey").addHeader("Accept", "text/event-stream")
+            .post(body.toRequestBody(JSON_MEDIA))
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val listener = object : EventSourceListener() {
+            override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
+                if (finished.get()) return
+                when (type) {
+                    "assistant.delta" -> {
+                        val d = runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).text }.getOrNull()
+                        cb.onDelta(d ?: data)
+                    }
+                    "assistant.completed" -> runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).content }.getOrNull()?.let(cb::onFinalContent)
+                    "tool.started", "tool.progress", "tool.completed", "tool.failed" -> runCatching { HermesJson.decodeFromString(ToolProgress.serializer(), data) }.getOrNull()?.let { cb.onToolProgress(it.tool, it.label, type == "tool.started" || type == "tool.progress" || it.status.equals("running", true)) }
+                    "run.completed" -> { runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).runtime }.getOrNull()?.let(cb::onRuntime); if (finished.compareAndSet(false, true)) cb.onComplete() }
+                    "done" -> if (finished.compareAndSet(false, true)) cb.onComplete()
+                    "error" -> if (finished.compareAndSet(false, true)) cb.onError(runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).error ?: HermesJson.decodeFromString(SessionSseData.serializer(), data).message }.getOrNull() ?: parseErrorBody(data).second ?: data.take(200))
+                }
+            }
+            override fun onClosed(es: EventSource) { if (finished.compareAndSet(false, true)) cb.onComplete() }
+            override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+                if (!finished.compareAndSet(false, true)) return
+                val msg = if (response != null && !response.isSuccessful) "HTTP ${response.code}${runCatching { response.body?.string() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}" else t?.message ?: "Connection failed"
+                cb.onError(msg)
+            }
+        }
+        return EventSources.createFactory(Http.streaming).newEventSource(builder.build(), listener)
+    }
+
+    suspend fun sendSessionTurn(sessionId: String, message: String): Result<SessionTurnResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat").addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(JSON_MEDIA)).build()
+            Http.base.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty(); if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
+                val result = HermesJson.decodeFromString(SessionTurnResult.serializer(), text)
+                if (result.text == null) throw RuntimeException(text.take(200))
+                result
             }
         }
     }
@@ -216,7 +291,7 @@ class HermesClient(
                 Http.base.newCall(req).execute().use { resp ->
                     val text = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {
-                        throw RuntimeException("HTTP ${resp.code}: ${text.take(200).ifBlank { resp.message }}")
+                        throw httpError(resp.code, text, resp.message)
                     }
                     HermesJson.decodeFromString(serializer, text)
                 }
@@ -226,5 +301,15 @@ class HermesClient(
     private companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         const val TOOL_PROGRESS_EVENT = "hermes.tool.progress"
+        fun httpError(code: Int, body: String, fallback: String) : HermesHttpError {
+            val parsed = parseErrorBody(body)
+            return HermesHttpError(code, parsed.first, body.take(200), "HTTP $code: ${body.take(200).ifBlank { fallback }}")
+        }
     }
+
+    @Serializable private data class SessionIdOnly(val id: String)
+    @Serializable private data class SessionSseData(
+        val delta: String? = null, val content: String? = null, val message: String? = null,
+        val error: String? = null, val detail: String? = null, val runtime: RuntimeInfo? = null,
+    ) { val text: String? get() = delta ?: content ?: message }
 }

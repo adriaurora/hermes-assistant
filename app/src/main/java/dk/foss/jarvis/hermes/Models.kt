@@ -151,13 +151,23 @@ data class SessionSummary(
 )
 
 @Serializable
-data class SessionEnvelope(val session: SessionSummary = SessionSummary(id = ""))
+data class SessionEnvelope(
+    val session: SessionSummary = SessionSummary(id = ""),
+    val runtime: RuntimeInfo? = null,
+)
+
+@Serializable
+data class RuntimeInfo(
+    val provider: String? = null, val model: String? = null,
+    val route_source: String? = null, val model_lock: String? = null,
+)
 
 @Serializable
 data class ModelLockResponse(
     val `object`: String? = null,
     val session_id: String? = null,
     val automatic: Boolean = false,
+    val runtime: RuntimeInfo? = null,
 )
 
 @Serializable
