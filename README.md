@@ -6,8 +6,9 @@ It replaces the device's default digital assistant (long-press the power
 button) and gives you streaming voice conversations plus normal chat — all
 powered by *your* Hermes instance. No wake word, no always-on microphone.
 
-The app talks to **one thing only: your Hermes `api_server`** (the OpenAI-compatible
-`/v1/chat/completions` endpoint). When FCM is configured it also calls the
+The app talks to **one thing only: your Hermes `api_server`**. Chat uses the
+Sessions API for new conversations and retains the OpenAI-compatible
+`/v1/chat/completions` transport for existing conversations. When FCM is configured it also calls the
 Hermes device-event REST APIs (`/api/devices/*`, `/api/events/*`). No companion
 server, no sidecar — point it at your Hermes URL + API key and go.
 
@@ -89,9 +90,15 @@ Debug builds are fine for sideloading. For a release build, add a
 
 ## Architecture
 
+### Chat transports
+
+New conversations use the capability-gated Sessions API; existing conversations
+retain legacy `/v1/chat/completions`. See [Sessions API chat migration](docs/sessions-api-chat.md)
+for the transport, session, and model-selection rules.
+
 | Layer | What |
 |---|---|
-| `hermes/HermesClient` | OkHttp SSE streaming to `/v1/chat/completions`. |
+| `hermes/HermesClient` | Sessions API SSE for new conversations and legacy `/v1/chat/completions` for existing ones. |
 | `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private
   SharedPreferences. |
 | `voice/SpeechInput` | STT via Android `SpeechRecognizer` (on-device where available). |

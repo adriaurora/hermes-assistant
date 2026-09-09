@@ -54,7 +54,7 @@ Verification = clean compile + tests + the running app on a device.
 
 | Layer | File(s) | Role |
 |---|---|---|
-| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: OkHttp SSE → `/v1/chat/completions`; `/v1/models` as connection test. When FCM is configured, `hermes/EventClient.kt` adds device-registration and event REST endpoints. |
+| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: Sessions API for new conversations, legacy `/v1/chat/completions` for existing ones, and `/v1/models` as connection test. When FCM is configured, `hermes/EventClient.kt` adds device-registration and event REST endpoints. |
 | Shared HTTP | `net/Http.kt` | `Http.base` (bounded timeouts) + `Http.streaming` (`readTimeout(0)`). Reuse these; never build a new OkHttpClient. |
 | Secrets | `data/SecureStore.kt` | AES-256-GCM key held in `AndroidKeyStore`; encrypted blob in app-private
   SharedPreferences. Interfaces (`AeadCipher`, `SecretBlobStore`) are injectable for JVM tests. |
@@ -69,12 +69,19 @@ Verification = clean compile + tests + the running app on a device.
 | Events | `hermes/EventClient.kt` | Authenticated REST: register/update/revoke device, fetch/ack/pending events. |
 | Delivery | `notifications/EventDelivery.kt`, `notifications/NotificationChannels.kt` | Dedup, fetch, post native notification, ACK (best-effort). |
 
+**Chat transport and session invariants.** `Conversation` persists the
+`transport`, normalized `origin`, `sessionId`, and `lastUsedAt` marker. The
+capability registry caches per origin; `UNKNOWN` is never cached and never
+downgrades to legacy. Sessions send exactly `{"message":...}`; model selection
+uses `{"model":"..."}`, and clearing uses exactly `{"model":null}`. The server
+owns history: send only the new turn and replace the local mirror on open.
+
 **Hermes owns model selection.** `ChatRequest.model` is nullable and OMITTED
 from the JSON body when unset (verified against hermes-agent v0.20.4:
 `gateway/platforms/api_server.py` `_request_agent_overrides` → session `/model`
-override → session-persisted model → gateway default). Do not reintroduce a
-client-side default model. `X-Hermes-Session-Id` keeps server-side session
-continuity; it is captured from the response header and persisted per
+override → session-persisted model → gateway default). Do not reintroduce
+client-side model routing. `X-Hermes-Session-Id` keeps legacy server-side
+session continuity; it is captured from the response header and persisted per
 conversation.
 
 ## Conventions (match these)
