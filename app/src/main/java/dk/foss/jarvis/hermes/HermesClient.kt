@@ -170,9 +170,9 @@ class HermesClient(
     suspend fun setSessionModel(sessionId: String, model: String, provider: String? = null): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val bodyString = if (provider != null)
-                """{"model":"$model","provider":"$provider","require_model_lock":true}"""
+                """{"model":"$model","provider":"$provider"}"""
             else
-                """{"model":"$model","require_model_lock":true}"""
+                """{"model":"$model"}"""
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/model")
                 .addHeader("Authorization", "Bearer $apiKey")
