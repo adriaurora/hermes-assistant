@@ -5,6 +5,8 @@ import dk.foss.jarvis.data.ConversationStore
 import dk.foss.jarvis.data.UiMessage
 import dk.foss.jarvis.ui.ModelSelection
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
@@ -38,7 +40,9 @@ class SessionsMockE2eTest {
         val bodies = mutableMapOf<RecordedRequest, String>()
         fun request() = originA.takeRequest(5, TimeUnit.SECONDS)!!.also { recorded += it; bodies[it] = it.body.readUtf8() }
         fun body(request: RecordedRequest) = bodies[request].orEmpty()
-        val capabilities = """{"object":"hermes.api_server.capabilities","platform":"hermes-agent","features":{"session_chat":true,"session_chat_streaming":true,"session_model_lock":true,"session_model_clear":true,"model_options":true,"chat_completions":true}}"""
+        // Unknown fields are deliberately included: clients must tolerate newer
+        // capability flags without losing the known session capabilities.
+        val capabilities = """{"object":"hermes.api_server.capabilities","platform":"hermes-agent","future_top_level":true,"features":{"session_chat":true,"session_chat_streaming":true,"session_model_lock":true,"session_model_clear":true,"model_options":true,"chat_completions":true,"future_feature":"new"}}"""
         originA.enqueue(MockResponse().setResponseCode(200).setBody(capabilities))
         val features = client().getCapabilities().getOrThrow()
         val capRequest = request()
@@ -73,6 +77,7 @@ class SessionsMockE2eTest {
             assertEquals(deltaExpected, deltas.toString()); finalExpected?.let { assertEquals(it, final) }; assertEquals(1, completions)
             assertEquals(route, runtime?.route_source)
             val req = request(); assertEquals("{\"message\":\"$message\"}", body(req))
+            assertEquals(setOf("message"), Json.parseToJsonElement(body(req)).jsonObject.keys)
             assertEquals("text/event-stream", req.getHeader("Accept")); assertTrue(req.path!!.endsWith("/chat/stream"))
             assertFalse(req.headers.names().contains("X-Hermes-Session-Id"))
         }
@@ -102,7 +107,13 @@ class SessionsMockE2eTest {
         val history = client().getSessionMessages("sess_e2e_1").getOrThrow(); val historyRequest = request()
         assertEquals("/api/sessions/sess_e2e_1/messages?order=oldest&limit=500", historyRequest.path)
         repo2.replaceAllMessages(history.data.map { UiMessage(it.role, it.content) }); assertEquals(4, repo2.messages.size)
-        recorded.forEach { r -> assertFalse(r.path!!.contains("/v1/chat/completions")); assertEquals("Bearer test-key", r.getHeader("Authorization")); if (r.path!!.contains("/chat")) { val requestBody = body(r); assertTrue(requestBody.startsWith("{\"message\":")); assertFalse(requestBody.contains("\"model\"") || requestBody.contains("\"provider\"") || requestBody.contains("\"messages\"")) } }
+        recorded.forEach { r ->
+            assertFalse(r.path!!.contains("/v1/chat/completions"))
+            assertEquals("Bearer test-key", r.getHeader("Authorization"))
+            if (r.path!!.endsWith("/chat/stream")) {
+                assertEquals(setOf("message"), Json.parseToJsonElement(body(r)).jsonObject.keys)
+            }
+        }
         val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b, true) is ChatTransportDecision.Unavailable); assertEquals(0, originB.requestCount)
     }
 
