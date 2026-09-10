@@ -16,6 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.sse.EventSource
+import dk.foss.jarvis.net.E2eLog
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -40,6 +41,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- per-conversation model selection (server-authoritative) ---
     private var modelSelection = ModelSelection()
+    private var lastSyncedConversationId: String? = null
     val modelLabel = mutableStateOf("Automatic")
     val modelDefault = mutableStateOf<String?>(null)
     val modelOptions = mutableStateOf<List<ModelOption>>(emptyList())
@@ -52,6 +54,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private var currentSource: EventSource? = null
     private var activeTurnJob: kotlinx.coroutines.Job? = null
+    private var turnInFlight = false
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /** Check selectorAvailable: model_options && session_model_lock. */
@@ -62,6 +65,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Fetch the Hermes catalog and, when a session exists, the current pinned model. */
     fun refreshModel() {
         viewModelScope.launch {
+            val conversationId = repo.activeConversationId
+            if (conversationId != lastSyncedConversationId) {
+                modelSelection.reset()
+                effectiveRoute.value = null
+                modelLabel.value = "Automatic"
+                lastSyncedConversationId = conversationId
+            }
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
             modelLoading.value = true
@@ -82,6 +92,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     clear = caps.features.session_model_clear,
                 )
             }
+            E2eLog.log("refreshModel capsState=${caps.state} mo=${caps.features.model_options} lock=${caps.features.session_model_lock} available=${modelSelection.state.selectorAvailable}")
 
             client.getModelOptions().fold(
                 onSuccess = {
@@ -103,6 +114,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             modelError.value = null
             val sid = repo.sessionId
+            E2eLog.log("chooseModel activeId=${repo.activeConversationId} sid=$sid option=${option?.modelId}")
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { modelError.value = "Configure Hermes in Settings first"; return@launch }
 
@@ -126,7 +138,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             val client = HermesClient(s.baseUrl, s.apiKey)
             val result = if (option == null) client.clearSessionModel(sid)
-            else client.setSessionModel(sid, option.modelId, option.providerSlug)
+            else client.setSessionModel(sid, option.modelId)
 
             result.fold(
                 onSuccess = {
@@ -162,7 +174,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) return@launch
             val client = HermesClient(s.baseUrl, s.apiKey)
-            client.setSessionModel(sessionId, pending.modelId, pending.providerSlug).fold(
+            client.setSessionModel(sessionId, pending.modelId).fold(
                 onSuccess = {
                     modelLabel.value = pending.label
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
@@ -178,8 +190,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Ask the server what model this session is actually pinned to (null = default). */
     private suspend fun syncLabelWithServer(client: HermesClient) {
         val sid = repo.sessionId
+        E2eLog.log("syncLabel sid=${sid ?: "null"}")
         if (sid.isNullOrEmpty()) {
-            modelLabel.value = modelSelection.state.label
+            modelSelection.reset()
+            effectiveRoute.value = null
+            modelLabel.value = "Automatic"
             return
         }
         client.getSession(sid).fold(
@@ -198,7 +213,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             for (modelId in row.models) {
                 if (modelId.isBlank()) continue
                 val label = if (row.name.isNullOrBlank()) modelId else "${row.name} · $modelId"
-                out.add(ModelOption(modelId = modelId, providerSlug = row.slug.ifBlank { null }, label = label))
+                out.add(ModelOption(modelId = modelId, label = label))
             }
         }
         return out
@@ -211,6 +226,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             repo.startNew()
         }
         modelSelection.reset()
+        modelLabel.value = "Automatic"
         effectiveRoute.value = null
         sendBlocked.value = null
         transportNotice.value = null
@@ -249,29 +265,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Public entry point: routes through the transport-aware decision engine. */
     fun sendUserMessage(userText: String) {
         val text = userText.trim()
-        if (text.isEmpty() || isStreaming.value) return
+        if (text.isEmpty() || isStreaming.value || turnInFlight) return
 
+        turnInFlight = true
         activeTurnJob = viewModelScope.launch {
-            val s = settingsStore.settings.first()
-            if (!s.isConfigured) { notConfigured.value = true; return@launch }
+            try {
+                val s = settingsStore.settings.first()
+                if (!s.isConfigured) { notConfigured.value = true; return@launch }
 
-            val client = HermesClient(s.baseUrl, s.apiKey)
-            val origin = originIdentity(s.baseUrl)
-            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            val hasMessages = repo.messages.any { !it.isError }
+                val client = HermesClient(s.baseUrl, s.apiKey)
+                val origin = originIdentity(s.baseUrl)
+                val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
+                val hasMessages = repo.messages.any { !it.isError }
+                E2eLog.log("send activeId=${repo.activeConversationId} sid=${repo.sessionId} hasMessages=$hasMessages")
 
-            when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
-                is ChatTransportDecision.Blocked -> {
-                    appendSystemError(d.reason)
-                    return@launch
+                when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
+                    is ChatTransportDecision.Blocked -> {
+                        appendSystemError(d.reason)
+                        return@launch
+                    }
+                    is ChatTransportDecision.Unavailable -> {
+                        sendBlocked.value = d.reason
+                        appendSystemError(d.reason)
+                        return@launch
+                    }
+                    is ChatTransportDecision.Legacy -> sendLegacy(client, text)
+                    is ChatTransportDecision.Sessions -> sendSessions(client, d.features, text)
                 }
-                is ChatTransportDecision.Unavailable -> {
-                    sendBlocked.value = d.reason
-                    appendSystemError(d.reason)
-                    return@launch
-                }
-                is ChatTransportDecision.Legacy -> sendLegacy(client)
-                is ChatTransportDecision.Sessions -> sendSessions(client, d.features)
+            } finally {
+                turnInFlight = false
             }
         }
     }
@@ -280,8 +302,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     @Deprecated("Use sendUserMessage", replaceWith = ReplaceWith("sendUserMessage(text)"))
     fun send(userText: String) = sendUserMessage(userText)
 
-    private suspend fun sendLegacy(client: HermesClient) {
-        repo.addMessage("user", messages.last { it.role == "user" && !it.isError }.text)
+    private suspend fun sendLegacy(client: HermesClient, userText: String) {
+        repo.addMessage("user", userText)
         val history = repo.historyForRequest()
         val assistantIndex = repo.addMessage("assistant", "")
         isStreaming.value = true
@@ -327,19 +349,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         })
     }
 
-    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures) {
-        var assistantIndex: Int
-
-        // 1. Create session if needed (BEFORE adding any user message)
+    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, userText: String) {
+        val origin = originIdentity(settingsStore.settings.first().baseUrl)
+        if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
+        val queuedText = repo.queueFirstTurn(userText)
         if (repo.sessionId == null) {
-            val titleForSession = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text?.take(60) ?: "Conversation"
-            val createResult = client.createSession(titleForSession)
+            val createResult = createSessionForFirstTurn(client, sessionTitleFrom(queuedText), repo.activeConversationId)
             createResult.fold(
                 onSuccess = { sid ->
-                    repo.bindSession(originIdentity(settingsStore.settings.first().baseUrl), sid, ChatTransportKind.SESSIONS)
-                    // Apply pending option if any
+                    repo.bindSession(origin, sid, ChatTransportKind.SESSIONS)
                     pendingOption?.let { opt ->
-                        client.setSessionModel(sid, opt.modelId, opt.providerSlug).fold(
+                        client.setSessionModel(sid, opt.modelId).fold(
                             onSuccess = {
                                 modelSelection.onSetAck(opt.label, it.runtime)
                                 modelLabel.value = opt.label
@@ -351,20 +371,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = {
                     appendSystemError("Couldn't start a Hermes session: ${it.message?.take(120) ?: "unknown"}")
+                    viewModelScope.launch { repo.persist() }
                     return@sendSessions
                 }
             )
         }
 
-        // 2. Now add the user message and placeholder
-        val lastUserMsg = repo.messages.last { it.role == "user" && !it.isError }
-        val userText = lastUserMsg.text
-        // We already added the user message in sendUserMessage guard... but we need to re-add
-        // Actually, sendUserMessage only guards, it doesn't add. Let me fix: we need to add in sendSessions.
-        // Wait — looking at the old send(), it did repo.addMessage("user", text). sendUserMessage doesn't.
-        // So we add here.
-        repo.addMessage("user", userText)
-        assistantIndex = repo.addMessage("assistant", "")
+        val assistantIndex = repo.addMessage("assistant", "")
         isStreaming.value = true
         activity.value = null
 
@@ -411,10 +424,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             override fun onError(message: String) = onMain {
-                val err = (currentSource as? okhttp3.sse.EventSource)?.let { null } // We classify below
-                val hermesErr = message.split(":").firstOrNull()?.let {
-                    runCatching { it.toInt() }.getOrNull()
-                }
                 val cleanMsg = message.replace("^HTTP \\d+: ?".toRegex(), "")
                 if (message.contains("401") || message.contains("403") || message.contains("gateway_auth_failed")) {
                     val errMsg = "Authentication failed (${cleanMsg.take(40)}). Check the API key in Settings."
@@ -504,6 +513,5 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 /** A selectable model from the Hermes catalog inventory. */
 data class ModelOption(
     val modelId: String,
-    val providerSlug: String? = null,
     val label: String,
 )

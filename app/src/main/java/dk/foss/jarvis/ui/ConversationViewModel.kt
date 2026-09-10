@@ -261,15 +261,17 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, myTurn: Int, baseUrl: String) {
         val userText = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text ?: ""
+        val origin = originIdentity(baseUrl)
+        if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
 
         // If no server session yet, create one first
         if (repo.sessionId.isNullOrEmpty()) {
-            val titleForSession = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text?.take(60) ?: "Conversation"
-            val createResult = client.createSession(titleForSession)
+            val titleForSession = sessionTitleFrom(repo.lastUserTurnText())
+            val createResult = createSessionForFirstTurn(client, titleForSession, repo.activeConversationId)
             createResult.fold(
                 onSuccess = { sid ->
                     if (turn != myTurn) return@fold
-                    repo.bindSession(originIdentity(baseUrl), sid, ChatTransportKind.SESSIONS)
+                    repo.bindSession(origin, sid, ChatTransportKind.SESSIONS)
                     // Send the turn on the new session
                     if (features.session_chat_streaming) {
                         startSessionStreaming(client, repo.sessionId!!, userText, myTurn)
@@ -281,6 +283,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                     if (turn != myTurn) return@fold
                     onMain {
                         error.value = "Couldn't start a Hermes session: ${it.message?.take(120)}"
+                        repo.persistAsync()
                         goIdle()
                     }
                 }

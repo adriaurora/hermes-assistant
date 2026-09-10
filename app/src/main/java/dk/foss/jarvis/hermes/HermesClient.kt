@@ -13,6 +13,7 @@ import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.jsonObject
+import dk.foss.jarvis.net.E2eLog
 
 /**
  * Talks to a Hermes `api_server`. This is the ONLY coupling to Hermes:
@@ -43,6 +44,7 @@ class HermesClient(
         cb: StreamCallbacks,
         model: String? = null,
     ): EventSource {
+        E2eLog.log("chat transport=LEGACY endpoint=POST /v1/chat/completions model=${model ?: "null"}")
         val body = HermesJson.encodeToString(
             ChatRequest.serializer(),
             ChatRequest(model = model, messages = messages, stream = true),
@@ -155,36 +157,32 @@ class HermesClient(
     }
 
     /** GET /api/model/options — provider/model inventory for a future model picker. */
-    suspend fun getModelOptions(): Result<ModelOptionsPayload> = getJson(
-        path = "api/model/options",
-        serializer = ModelOptionsPayload.serializer(),
-    )
+    suspend fun getModelOptions(): Result<ModelOptionsPayload> = getJson(path = "api/model/options", serializer = ModelOptionsPayload.serializer())
+        .onSuccess { E2eLog.log("modelOptions default=${it.model} count=${it.providers.sumOf { p -> p.models.size }}") }
 
     /** GET /api/sessions/{id} — fetches a single server session. */
-    suspend fun getSession(sessionId: String): Result<SessionEnvelope> = getJson(
-        path = "api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}",
-        serializer = SessionEnvelope.serializer(),
-    )
+    suspend fun getSession(sessionId: String): Result<SessionEnvelope> = getJson(path = "api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}", serializer = SessionEnvelope.serializer())
+
 
     /** POST /api/sessions/{id}/model — sets a model lock on a server session. */
-    suspend fun setSessionModel(sessionId: String, model: String, provider: String? = null): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
+    suspend fun setSessionModel(sessionId: String, model: String): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
-            val bodyString = if (provider != null)
-                """{"model":"$model","provider":"$provider"}"""
-            else
-                """{"model":"$model"}"""
+            val bodyString = """{"model":"$model"}"""
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/model")
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json; charset=utf-8")
                 .post(bodyString.toRequestBody(JSON_MEDIA))
                 .build()
+            E2eLog.log("setModel POST /api/sessions/$sessionId/model body=$bodyString")
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
                     throw httpError(resp.code, text, resp.message)
                 }
-                HermesJson.decodeFromString(ModelLockResponse.serializer(), text)
+                HermesJson.decodeFromString(ModelLockResponse.serializer(), text).also {
+                    E2eLog.log("setModel resp automatic=${it.automatic} route=${it.runtime?.route_source} model=${it.runtime?.model}")
+                }
             }
         }
     }
@@ -199,12 +197,15 @@ class HermesClient(
                 .addHeader("Content-Type", "application/json; charset=utf-8")
                 .post(bodyString.toRequestBody(JSON_MEDIA))
                 .build()
+            E2eLog.log("clearModel POST /api/sessions/$sessionId/model body=$bodyString")
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
                     throw httpError(resp.code, text, resp.message)
                 }
-                HermesJson.decodeFromString(ModelLockResponse.serializer(), text)
+                HermesJson.decodeFromString(ModelLockResponse.serializer(), text).also {
+                    E2eLog.log("clearModel resp automatic=${it.automatic} route=${it.runtime?.route_source} model=${it.runtime?.model}")
+                }
             }
         }
     }
@@ -229,13 +230,16 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
-                runCatching { HermesJson.decodeFromString(SessionEnvelope.serializer(), text).session.id.takeIf { it.isNotEmpty() } ?: error("missing session id") }
+                val id = runCatching { HermesJson.decodeFromString(SessionEnvelope.serializer(), text).session.id.takeIf { it.isNotEmpty() } ?: error("missing session id") }
                     .recoverCatching { HermesJson.decodeFromString(SessionIdOnly.serializer(), text).id }.getOrThrow()
+                E2eLog.log("createSession sid=$id")
+                id
             }
         }
     }
 
     fun streamSessionTurn(sessionId: String, message: String, cb: StreamCallbacks): EventSource {
+        E2eLog.log("chat transport=SESSIONS sid=$sessionId endpoint=POST /api/sessions/$sessionId/chat/stream")
         val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
         val builder = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat/stream")
             .addHeader("Authorization", "Bearer $apiKey").addHeader("Accept", "text/event-stream")
@@ -244,6 +248,7 @@ class HermesClient(
         val listener = object : EventSourceListener() {
             override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
                 if (finished.get()) return
+                E2eLog.log("sse event=${type ?: "null"}")
                 when (type) {
                     "assistant.delta" -> {
                         val d = runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).text }.getOrNull()
@@ -275,6 +280,7 @@ class HermesClient(
                 val text = resp.body?.string().orEmpty(); if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
                 val result = HermesJson.decodeFromString(SessionTurnResult.serializer(), text)
                 if (result.text == null) throw RuntimeException(text.take(200))
+                E2eLog.log("sendSessionTurn resp route=${result.runtime?.route_source} model=${result.runtime?.model}")
                 result
             }
         }

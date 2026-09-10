@@ -10,6 +10,7 @@ import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import dk.foss.jarvis.net.E2eLog
 
 enum class HistoryOrigin { LOCAL, SERVER_PHONE, SERVER_OTHER }
 
@@ -97,6 +98,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.persist()
             repo.open(id)
+            E2eLog.log("historyOpen id=${repo.activeConversationId} transport=${repo.transport} sessionId=${repo.sessionId}")
             // If this is a SESSIONS conversation bound to the current server,
             // try to refresh messages from the server (authoritative copy).
             val s = settingsStore.settings.first()

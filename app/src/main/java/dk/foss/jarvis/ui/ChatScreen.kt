@@ -819,7 +819,7 @@ private fun HelmModelSheet(
                             itemsIndexed(options) { _, opt ->
                                 ModelOptionItem(
                                     label      = opt.label,
-                                    caption    = opt.providerSlug,
+                                    caption    = null,
                                     selected   = selectedLabel == opt.label,
                                     onClick    = { onPick(opt) },
                                 )

@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import dk.foss.jarvis.net.E2eLog
 
 /** Chat transport generation marker. Deliberately unrelated to the push PushProtocol enum and to FCM/device identity. */
 enum class ChatTransportKind { LEGACY_CHAT, SESSIONS }
@@ -48,9 +49,11 @@ sealed class ChatTransportDecision {
 }
 
 object ChatTransportSelector {
-    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): ChatTransportDecision = when (convTransport) {
+    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): ChatTransportDecision {
+        val originMatch = convOrigin == currentOrigin
+        val result = when (convTransport) {
         ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Legacy
-        ChatTransportKind.SESSIONS -> if (convOrigin != currentOrigin) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
+        ChatTransportKind.SESSIONS -> if (!originMatch) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
         null -> when {
             hasMessages -> ChatTransportDecision.Legacy
             features == null || features.state == CapabilityState.UNKNOWN -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
@@ -58,6 +61,10 @@ object ChatTransportSelector {
             features.features.session_chat -> ChatTransportDecision.Sessions(features.features)
             else -> ChatTransportDecision.Legacy
         }
+        }
+        val caps = features?.features?.let { "session_chat=${it.session_chat},session_chat_streaming=${it.session_chat_streaming},model_options=${it.model_options},session_model_lock=${it.session_model_lock},session_model_clear=${it.session_model_clear}" } ?: "null"
+        E2eLog.log("transportDecision caps=$caps storedTransport=$convTransport originMatch=$originMatch hasMessages=$hasMessages -> ${result::class.simpleName}")
+        return result
     }
 }
 

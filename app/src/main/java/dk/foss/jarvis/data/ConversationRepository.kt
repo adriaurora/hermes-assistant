@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.UUID
+import dk.foss.jarvis.net.E2eLog
 
 /**
  * The single source of truth for the *active* conversation, shared by both the
@@ -35,12 +36,14 @@ class ConversationRepository internal constructor(private val store: Conversatio
         private set
 
     private var activeId: String = UUID.randomUUID().toString()
+    val activeConversationId: String get() = activeId
     private var title: String = ""
     private var createdAt: Long = System.currentTimeMillis()
     @Volatile private var dirty = false
 
     fun startNew() {
         activeId = UUID.randomUUID().toString()
+        E2eLog.log("startNew newId=$activeId")
         messages.clear()
         sessionId = null
         transport = null; origin = null; lastUsedAt = null
@@ -58,6 +61,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         transport = c.transport; origin = c.origin; lastUsedAt = c.lastUsedAt
         messages.clear()
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
+        E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} origin=${c.origin} msgs=${c.messages.size}")
         dirty = false
     }
 
@@ -77,10 +81,21 @@ class ConversationRepository internal constructor(private val store: Conversatio
         dirty = true
     }
 
-    fun bindSession(origin: String, sessionId: String, transport: ChatTransportKind) { this.origin = origin; this.sessionId = sessionId; this.transport = transport; dirty = true }
+    fun bindSession(origin: String, sessionId: String, transport: ChatTransportKind) { E2eLog.log("bindSession origin=$origin sid=$sessionId transport=$transport"); this.origin = origin; this.sessionId = sessionId; this.transport = transport; dirty = true }
+    /** Bind origin + transport before the first server call, so a failed session creation stays retryable as Sessions. */
+    fun bindTransport(origin: String, transport: ChatTransportKind) { this.origin = origin; this.transport = transport; dirty = true }
     fun markTransport(kind: ChatTransportKind) { transport = kind; dirty = true }
     fun markUsed() { lastUsedAt = System.currentTimeMillis(); dirty = true }
     fun lastUserTurnText(): String? = messages.lastOrNull { it.role == "user" && !it.isError }?.text
+    /** Queue a first Sessions turn, reusing an identical unsent bubble after a failed create. */
+    fun queueFirstTurn(text: String): String {
+        if (sessionId == null) {
+            val last = messages.lastOrNull { !it.isError }
+            if (last?.role == "user" && last.text == text) return text
+        }
+        addMessage("user", text)
+        return text
+    }
     fun replaceAllMessages(items: List<UiMessage>) { messages.clear(); messages.addAll(items); dirty = true }
 
     fun setSessionId(id: String) {
@@ -141,6 +156,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
     suspend fun list(): List<ConversationMeta> = store.list()
 
     suspend fun delete(id: String) {
+        E2eLog.log("delete id=$id")
         store.delete(id)
         if (id == activeId) startNew()
     }
