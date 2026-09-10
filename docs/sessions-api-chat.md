@@ -43,8 +43,11 @@ event IDs, and the push protocol. `ChatTransportKind` is deliberately not
 Existing (pre-migration) conversations remain `LEGACY_CHAT` forever. An
 undecided conversation with messages is treated as Legacy. A brand-new
 conversation becomes `SESSIONS` when capabilities allow it. Undecided
-conversations never mix transports. If the first turn fails before session
-creation, nothing is persisted: there is no orphan session and no downgrade.
+conversations never mix transports. A brand-new conversation commits to `SESSIONS`
+when capabilities allow it; if create-session fails, it remains `SESSIONS`-bound
+with no server session and the unsent user turn is retained locally. It is
+submitted only by an explicit user retry, and then exactly one turn is sent.
+There is no orphan server session and no downgrade to legacy.
 
 ## 5. Session lifecycle
 
@@ -55,12 +58,22 @@ before the first turn. The client can read a session with
 `GET /api/sessions/{id}/messages?order=oldest`, and delete it with
 `DELETE /api/sessions/{id}`.
 
+The initial title is derived from the first user turn: whitespace is collapsed,
+the result is capped at 60 characters, and blank text falls back to
+`Conversation`. On a duplicate-title rejection (HTTP 400/409), the client retries
+once with a deterministic ` · <conversation-id prefix>` suffix. Session identity
+is always the server-generated `session.id`; the title is never used as identity.
+
 The server owns history. Each turn sends only the new turn,
 `{"message":"..."}`; history is never resent. On open, the local mirror is
 replaced, not concatenated, with the oldest-first server transcript. If the
 fetch fails, the saved local copy is shown with a notice.
 
 ## 6. Resume & missing session
+
+After a force-stop/cold start with no persisted active-conversation pointer, the
+app starts a new conversation; restoring the last active conversation is tracked
+as backlog.
 
 After an app restart, `origin` and `sessionId` are recovered from disk and the
 same session is resumed. A `404 session_not_found` never falls back to legacy.
@@ -113,7 +126,7 @@ acknowledgement). The **effective** model for a turn comes from
 are surfaced separately in the model sheet. In summary, server precedence is:
 confirmed session lock → internal override → `sessions.model` →
 `model_routes` alias → per-request → global default. Chat turns never carry a
-model.
+model. The model-lock POST response echoes the resolver's pre-turn state and may report an intermediate `route_source` (for example `raw_request`); the authoritative route for a turn is the `runtime` carried by that turn's `run.completed` event, which reports `session_model_lock` when a confirmed lock is in effect.
 
 ## 10. Legacy fallback rules
 
