@@ -14,6 +14,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -124,5 +125,49 @@ class SessionsMockE2eTest {
         val error = result.exceptionOrNull() as? HermesHttpError
         assertTrue(result.isFailure); assertNotNull(error); assertTrue(error!!.isSessionMissing); assertEquals(before + 1, originA.requestCount)
         assertFalse(originA.takeRequest()!!.path!!.contains("/v1/chat/completions"))
+    }
+
+    @Test
+    fun `first turns retain one bubble and retry duplicate titles`() = runBlocking {
+        val titles = mutableSetOf<String>()
+        var nextId = 0
+        originA.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when {
+                    request.path == "/api/sessions" -> {
+                        val body = request.body.clone().readUtf8()
+                        val title = body.substringAfter("\"title\":\"").substringBefore("\"}")
+                        if (!titles.add(title)) MockResponse().setResponseCode(400)
+                        else MockResponse().setResponseCode(201).setBody("{\"session\":{\"id\":\"flow-${++nextId}\"}}")
+                    }
+                    request.path!!.contains("/chat/stream") -> MockResponse().setResponseCode(200)
+                        .setHeader("Content-Type", "text/event-stream")
+                        .setBody(sse("assistant.completed" to "{\"content\":\"reply\"}", "done" to "{}"))
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        val repo = ConversationRepository(ConversationStore(temporaryFolder.newFolder("first-turn")))
+        val client = HermesClient(base(originA), "test-key")
+        suspend fun turn() {
+            val text = repo.queueFirstTurn("same text")
+            val sid = createSessionForFirstTurn(client, sessionTitleFrom(text), repo.activeConversationId).getOrThrow()
+            repo.bindSession(base(originA), sid, ChatTransportKind.SESSIONS)
+            val done = CountDownLatch(1)
+            client.streamSessionTurn(sid, text, object : HermesClient.StreamCallbacks {
+                override fun onDelta(textDelta: String) = Unit
+                override fun onFinalContent(text: String) = Unit
+                override fun onToolProgress(tool: String, label: String?, running: Boolean) = Unit
+                override fun onComplete() { done.countDown() }
+                override fun onError(message: String) { done.countDown() }
+            })
+            assertTrue(done.await(5, TimeUnit.SECONDS))
+            repo.addMessage("assistant", "reply")
+        }
+        turn(); val first = repo.sessionId; assertEquals(1, repo.messages.count { it.role == "user" })
+        repo.startNew(); turn(); val second = repo.sessionId
+        assertNotEquals(first, second); assertEquals(1, repo.messages.count { it.role == "user" })
+        assertEquals(5, originA.requestCount)
+        assertEquals(2, (0 until 5).map { originA.takeRequest()!!.path }.count { it!!.contains("/chat/stream") })
     }
 }

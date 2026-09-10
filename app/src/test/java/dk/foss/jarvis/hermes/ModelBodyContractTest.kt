@@ -13,6 +13,9 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * Tests setSessionModel and clearSessionModel body contracts, and response decoding.
+ *
+ * Contract (sessions-api-chat.md §8): POST /api/sessions/{id}/model sends EXACTLY
+ * {"model":"<string id>"} — no provider key. Clear sends {"model":null}.
  */
 class ModelBodyContractTest {
 
@@ -23,9 +26,9 @@ class ModelBodyContractTest {
 
     private fun client() = HermesClient(server.url("/").toString().trimEnd('/'), "test-key")
 
-    // 1. setSessionModel("s1","m1") → body EXACTLY {"model":"m1","require_model_lock":true}
+    // 1. setSessionModel("s1","m1") → body EXACTLY {"model":"m1"}
     @Test
-    fun `setSessionModel body has no provider key`() = runBlocking {
+    fun `setSessionModel body is exactly model key`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200)
             .setBody("""{"object":"hermes.session.model_lock","session_id":"s1","automatic":false,"runtime":{"model":"m1","route_source":"session_model_lock"}}"""))
         client().setSessionModel("s1", "m1")
@@ -33,23 +36,14 @@ class ModelBodyContractTest {
         assertEquals("POST", req.method)
         val body = req.body.readUtf8()
         assertEquals("""{"model":"m1"}""", body)
-        assertFalse(body.contains("provider"))
+        // Regression: ensure no provider key is ever included
+        assertFalse("Body must NOT contain 'provider' key", body.contains("provider"))
+        // Verify only the "model" key exists
+        val keys = body.trim('{', '}').split(",").map { it.trim().split(":")[0].trim('"') }
+        assertEquals(listOf("model"), keys)
     }
 
-    // 2. setSessionModel with provider → body has provider
-    @Test
-    fun `setSessionModel with provider includes provider`() = runBlocking {
-        server.enqueue(MockResponse().setResponseCode(200)
-            .setBody("""{"object":"hermes.session.model_lock","session_id":"s1","automatic":false}"""))
-        client().setSessionModel("s1", "m1", "custom")
-        val req = server.takeRequest()
-        val body = req.body.readUtf8()
-        assertTrue(body.contains("provider"))
-        assertTrue(body.contains("custom"))
-        assertEquals("""{"model":"m1","provider":"custom"}""", body)
-    }
-
-    // 3. clearSessionModel("s1") → body EXACTLY {"model":null}
+    // 2. clearSessionModel("s1") → body EXACTLY {"model":null}
     @Test
     fun `clearSessionModel body exactly model null`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200)
@@ -60,7 +54,7 @@ class ModelBodyContractTest {
         assertEquals("""{"model":null}""", body)
     }
 
-    // 4. setSessionModel 400 → failure
+    // 3. setSessionModel 400 → failure
     @Test
     fun `setSessionModel 400 returns failure`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(400))
@@ -68,7 +62,7 @@ class ModelBodyContractTest {
         assertTrue(result.isFailure)
     }
 
-    // 5. ModelLockResponse with runtime decodes model
+    // 4. ModelLockResponse with runtime decodes model
     @Test
     fun `ModelLockResponse runtime model decodes`() {
         val json = """{"object":"hermes.session.model_lock","session_id":"s1","automatic":false,"runtime":{"model":"m1","route_source":"session_model_lock"}}"""
@@ -77,7 +71,7 @@ class ModelBodyContractTest {
         assertEquals("session_model_lock", resp.runtime?.route_source)
     }
 
-    // 6. SessionEnvelope with runtime decodes
+    // 5. SessionEnvelope with runtime decodes
     @Test
     fun `SessionEnvelope with runtime decodes`() {
         val json = """{"session":{"id":"s1"},"runtime":{"model":"m2","route_source":"global"}}"""
