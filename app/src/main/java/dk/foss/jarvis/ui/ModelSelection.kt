@@ -1,10 +1,12 @@
 package dk.foss.jarvis.ui
 
+import androidx.compose.runtime.mutableStateOf
 import dk.foss.jarvis.hermes.RuntimeInfo
 
 /**
  * Pure Kotlin state machine for per-session model selection.
- * No Android imports — fully JVM-testable.
+ * Compose-observable state; androidx.compose.runtime is JVM-safe and fully
+ * JVM-testable.
  *
  * Semantics:
  * - label: display string ("Automatic" or the server-confirmed model)
@@ -29,8 +31,12 @@ data class EffectiveRoute(val model: String?, val routeSource: String?) {
 }
 
 class ModelSelection {
-    var state: ModelSelectionState = ModelSelectionState()
-        private set
+    private var _state = mutableStateOf(ModelSelectionState())
+
+    /** Compose-observable state so UI readers (e.g. ChatScreen) recompose when it changes. */
+    var state: ModelSelectionState
+        get() = _state.value
+        private set(value) { _state.value = value }
     var effective: EffectiveRoute? = null
 
     /** Called after refreshModel() resolves caps. */
@@ -67,9 +73,10 @@ class ModelSelection {
         // No state change
     }
 
-    /** Reset to initial state (called on newConversation). */
+    /** Reset per-conversation model state (label, lock, effective route) while
+     *  preserving capability-derived selector availability, which is origin-scoped. */
     fun reset() {
-        state = ModelSelectionState()
+        state = state.copy(label = "Automatic", locked = false)
         effective = null
     }
 
