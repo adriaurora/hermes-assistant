@@ -30,7 +30,10 @@ class ConversationRepository internal constructor(private val store: Conversatio
         data class BlockedRetryable(val error: Throwable) : RebindOutcome()
     }
     private val switchListeners = mutableListOf<() -> Unit>()
-    fun onConversationSwitched(listener: () -> Unit) { switchListeners += listener }
+    fun onConversationSwitched(listener: () -> Unit): () -> Unit {
+        switchListeners += listener
+        return { switchListeners -= listener }
+    }
     private fun switched() { switchListeners.toList().forEach { it() } }
 
     // App-lifetime scope so a fire-and-forget save survives a ViewModel being cleared
@@ -135,11 +138,16 @@ class ConversationRepository internal constructor(private val store: Conversatio
     fun markTransport(kind: ChatTransportKind) { transport = kind; dirty = true }
     fun markUsed() { lastUsedAt = System.currentTimeMillis(); dirty = true }
     fun lastUserTurnText(): String? = messages.lastOrNull { it.role == "user" && !it.isError }?.text
-    /** Queue a first Sessions turn, reusing an identical unsent bubble after a failed create. */
+    /** Queue a first Sessions turn, reusing an identical unsent bubble after a failed create.
+     * Once a session exists, the same rule applies only when the latest message is
+     * an unanswered user turn; answered/error-closed turns remain new turns. */
     fun queueFirstTurn(text: String): String {
         if (sessionId == null) {
             val last = messages.lastOrNull { !it.isError }
             if (last?.role == "user" && last.text == text) return text
+        } else {
+            val last = messages.lastOrNull()
+            if (last?.role == "user" && !last.isError && last.text == text) return text
         }
         addMessage("user", text)
         return text

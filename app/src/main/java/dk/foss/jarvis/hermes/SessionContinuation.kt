@@ -3,6 +3,40 @@ package dk.foss.jarvis.hermes
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.net.E2eLog
 
+sealed class SessionTurnStartOutcome {
+    data class Started(val sessionId: String, val runtime: RuntimeInfo? = null) : SessionTurnStartOutcome()
+    data class LockFailed(val sessionId: String, val error: Throwable) : SessionTurnStartOutcome()
+    data class CreateFailed(val error: Throwable) : SessionTurnStartOutcome()
+}
+
+/** Creates/binds a session and, when requested, obtains the model-lock ACK.
+ * No chat turn is sent here: callers may only proceed after Started. */
+suspend fun startSessionTurn(
+    repo: ConversationRepository,
+    client: HermesClient,
+    origin: String,
+    title: String,
+    uniqueSuffix: String,
+    option: String?,
+): SessionTurnStartOutcome {
+    val sid = repo.sessionId ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
+        return SessionTurnStartOutcome.CreateFailed(it)
+    }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
+    var runtime: RuntimeInfo? = null
+    if (option != null) {
+        val result = client.setSessionModel(sid, option)
+        if (result.isFailure) {
+            val error = result.exceptionOrNull()!!
+            val h = error as? HermesHttpError
+            E2eLog.log("model lock failed sid=$sid${h?.let { " code=${it.code}" } ?: ""}")
+            return SessionTurnStartOutcome.LockFailed(sid, error)
+        }
+        runtime = result.getOrNull()?.runtime
+    }
+    return SessionTurnStartOutcome.Started(sid, runtime)
+}
+
+
 /** Result of the repository/transport boundary check preceding a chat turn. */
 sealed class ContinuationPlan {
     data class Send(val decision: ChatTransportDecision) : ContinuationPlan()

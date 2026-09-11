@@ -58,10 +58,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private var streamDone = false
     private var turn = 0 // bumped each turn; stale async callbacks check this and bail
     private var retriedThisTurn = false
-    /** Running count of characters received via SSE deltas this turn. Used by
-     *  onFinalContent to avoid re-enqueueing speech that was already spoken from
-     *  delta fragments. */
-    private var deltaLen = 0
 
     // Speak a complete sentence that's been sitting in the buffer once the stream
     // goes quiet (e.g. the agent paused to run a tool), not only when more text arrives.
@@ -125,7 +121,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         reply.value = ""
         error.value = null
         hint.value = null
-        deltaLen = 0
     }
 
     /**
@@ -331,23 +326,20 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
             override fun onFinalContent(text: String) = onMain {
                 if (turn != myTurn) return@onMain
-                // Replace the accumulated text exactly once (no duplication).
-                // For TTS: only enqueue the portion NOT already spoken from deltas.
-                reply.value = text
-                if (deltaLen > 0 && deltaLen < text.length) {
-                    // Delta fragments were received and the final text is longer.
-                    // Enqueue only the suffix that hasn't been spoken yet.
-                    sentenceBuffer.setLength(0)
-                    sentenceBuffer.append(text, deltaLen, text.length)
-                    extractSentences()
-                } else if (deltaLen == 0) {
-                    // No deltas arrived (e.g. non-streaming path): enqueue the full text.
-                    sentenceBuffer.setLength(0)
-                    sentenceBuffer.append(text)
-                    extractSentences()
+                // Compare against the streamed display, not the number of received
+                // characters: the buffer may still contain an unspoken prefix.
+                val streamed = reply.value
+                if (text.startsWith(streamed)) {
+                    if (text.length > streamed.length) {
+                        sentenceBuffer.append(text.substring(streamed.length))
+                        extractSentences()
+                    }
+                } else {
+                    // A divergent final is display-only; retaining the pending buffer
+                    // avoids repeating spoken text and avoids dropping its unspoken tail.
+                    E2eLog.log("voice final diverged streamedLen=${streamed.length} finalLen=${text.length}")
                 }
-                // else: deltaLen >= text.length — deltas already covered the full text,
-                // nothing new to enqueue.
+                reply.value = text
                 pendingText.value = ""
             }
 
@@ -433,7 +425,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     /** A token arrived: show it, and speak as soon as a full sentence is available. */
     private fun onTextDelta(delta: String) {
         reply.value += delta
-        deltaLen += delta.length
         sentenceBuffer.append(delta)
         extractSentences()
         pendingText.value = sentenceBuffer.toString().trim()
@@ -533,7 +524,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         speakingIndex.value = -1
         pendingText.value = ""
         spokenCount = 0
-        deltaLen = 0
         state.value = ConvState.Idle
         hint.value = null
         // Save the conversation (covers turns that ended in an error/cancel, not just

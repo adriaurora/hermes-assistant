@@ -52,7 +52,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Model requested while no server session existed yet; applied on first session id. */
     var pendingOption: ModelOption? = null
 
-    init { repo.onConversationSwitched { pendingOption = null } }
+    private val unsubscribeSwitched = repo.onConversationSwitched { pendingOption = null }
 
     private var currentSource: EventSource? = null
     private var activeTurnJob: kotlinx.coroutines.Job? = null
@@ -378,32 +378,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val origin = originIdentity(s.baseUrl, s.apiKey)
         if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
         val queuedText = repo.queueFirstTurn(userText)
-        if (repo.sessionId == null) {
-            val createResult = createSessionForFirstTurn(client, sessionTitleFrom(queuedText), repo.activeConversationId)
-            createResult.fold(
-                onSuccess = { sid ->
-                    repo.bindSession(origin, sid, ChatTransportKind.SESSIONS)
-                    pendingOption?.let { opt ->
-                        client.setSessionModel(sid, opt.modelId).fold(
-                            onSuccess = {
-                                modelSelection.onSetAck(opt.label, it.runtime)
-                                modelLabel.value = opt.label
-                                effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
-                            },
-                            onFailure = { modelError.value = "Couldn't pin model to session: ${it.message?.take(120)}" },
-                        )
-                        // Consumir la opción pendiente independientemente de si el set tuvo éxito.
-                        // Invariante: la opción elegida en la conversación A no se re-aplica a la B.
-                        // Si el set falló, el error queda en modelError y el usuario puede reintentar.
-                        pendingOption = null
-                    }
-                },
-                onFailure = {
-                    appendSystemError("Couldn't start a Hermes session: ${it.message?.take(120) ?: "unknown"}")
-                    viewModelScope.launch { repo.persist() }
-                    return@sendSessions
-                }
-            )
+        val pending = pendingOption
+        when (val outcome = startSessionTurn(
+            repo, client, origin, sessionTitleFrom(queuedText), repo.activeConversationId,
+            pending?.modelId,
+        )) {
+            is SessionTurnStartOutcome.CreateFailed -> {
+                appendSystemError("Couldn't start a Hermes session: ${outcome.error.message?.take(120) ?: "unknown"}")
+                viewModelScope.launch { repo.persist() }
+                return
+            }
+            is SessionTurnStartOutcome.LockFailed -> {
+                modelSelection.onRejected()
+                modelLabel.value = modelSelection.state.label
+                effectiveRoute.value = null
+                modelError.value = "Couldn't pin model to session: ${outcome.error.message?.take(120)}"
+                repo.persistAsync()
+                return
+            }
+            is SessionTurnStartOutcome.Started -> if (pending != null) {
+                // Consume only after the lock ACK; a retry must issue the lock again.
+                pendingOption = null
+                modelSelection.onSetAck(pending.label, outcome.runtime)
+                modelLabel.value = pending.label
+                outcome.runtime?.let { effectiveRoute.value = EffectiveRoute.fromRuntime(it) }
+            }
         }
 
         val assistantIndex = repo.addMessage("assistant", "")
@@ -533,6 +532,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         cancel()
+        unsubscribeSwitched()
         uiScope.cancel()
         repo.persistAsync()
         super.onCleared()
