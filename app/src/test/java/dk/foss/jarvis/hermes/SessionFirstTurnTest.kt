@@ -10,8 +10,12 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.ConcurrentHashMap
+import dk.foss.jarvis.data.ConversationRepository
+import dk.foss.jarvis.data.ConversationStore
+import org.junit.rules.TemporaryFolder
 
 class SessionFirstTurnTest {
+    @get:org.junit.Rule val temporaryFolder = TemporaryFolder()
     private lateinit var server: MockWebServer
 
     @Before fun setUp() { server = MockWebServer(); server.start() }
@@ -19,6 +23,65 @@ class SessionFirstTurnTest {
     private fun client() = HermesClient(server.url("/").toString().trimEnd('/'), "test-key")
     private fun response(id: String) = MockResponse().setResponseCode(201).setBody("{\"session\":{\"id\":\"$id\"}}")
     private fun title(request: RecordedRequest) = request.body.clone().readUtf8().substringAfter("\"title\":\"").substringBefore("\"}")
+
+    @Test fun `firstTurn_modelLockFails_noTurnSent`() = runBlocking {
+        server.enqueue(response("s1"))
+        server.enqueue(MockResponse().setResponseCode(500))
+        val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder()))
+        r.queueFirstTurn("hello")
+        val outcome = startSessionTurn(r, client(), server.url("/").toString().trimEnd('/'), "hello", "id", "model-x")
+        assertTrue(outcome is SessionTurnStartOutcome.LockFailed)
+        val paths = listOf(server.takeRequest().path, server.takeRequest().path)
+        assertEquals(listOf("/api/sessions", "/api/sessions/s1/model"), paths)
+        assertTrue(paths.none { it!!.contains("/chat") })
+        assertEquals(1, r.messages.count { it.role == "user" })
+    }
+
+    @Test fun `firstTurn_modelLock4xx_isBlocked`() = runBlocking {
+        server.enqueue(response("s1"))
+        server.enqueue(MockResponse().setResponseCode(400))
+        val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder()))
+        r.queueFirstTurn("hello")
+        val outcome = startSessionTurn(r, client(), server.url("/").toString().trimEnd('/'), "hello", "id", "model-x")
+        assertTrue(outcome is SessionTurnStartOutcome.LockFailed)
+        val paths = listOf(server.takeRequest().path, server.takeRequest().path)
+        assertEquals(listOf("/api/sessions", "/api/sessions/s1/model"), paths)
+        assertTrue(paths.none { it!!.contains("/chat") })
+        assertTrue(r.messages.any { it.role == "user" && it.text == "hello" })
+    }
+
+    @Test fun `firstTurn_modelLockAck_allowsStart`() = runBlocking {
+        server.enqueue(response("s1"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder()))
+        val outcome = startSessionTurn(r, client(), server.url("/").toString().trimEnd('/'), "hello", "id", "model-x")
+        assertTrue(outcome is SessionTurnStartOutcome.Started)
+        assertEquals("s1", r.sessionId)
+        // The caller sends the chat turn only after Started; this test intentionally does not.
+        assertEquals("/api/sessions", server.takeRequest().path)
+        assertEquals("/api/sessions/s1/model", server.takeRequest().path)
+    }
+
+    @Test fun `lock failure retrying same first turn keeps one user message`() = runBlocking {
+        server.enqueue(response("s1"))
+        server.enqueue(MockResponse().setResponseCode(500))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder()))
+        r.queueFirstTurn("hello")
+        assertTrue(startSessionTurn(r, client(), server.url("/").toString().trimEnd('/'), "hello", "id", "model-x") is SessionTurnStartOutcome.LockFailed)
+        r.queueFirstTurn("hello")
+        assertTrue(startSessionTurn(r, client(), server.url("/").toString().trimEnd('/'), "hello", "id", "model-x") is SessionTurnStartOutcome.Started)
+        assertEquals(1, r.messages.count { it.role == "user" && !it.isError })
+    }
+
+    @Test fun `boundSession_retriesLockBeforeCallerTurn`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder()))
+        r.bindSession("origin", "s1", ChatTransportKind.SESSIONS)
+        assertTrue(startSessionTurn(r, client(), "origin", "ignored", "id", "model-x") is SessionTurnStartOutcome.Started)
+        assertEquals("/api/sessions/s1/model", server.takeRequest().path)
+        assertEquals(1, server.requestCount)
+    }
 
     @Test fun `null title falls back`() { assertEquals("Conversation", sessionTitleFrom(null)) }
     @Test fun `blank title falls back`() { assertEquals("Conversation", sessionTitleFrom("")); assertEquals("Conversation", sessionTitleFrom("   \n\t ")) }

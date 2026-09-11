@@ -89,21 +89,15 @@ class SentenceSplitterTest {
         assertEquals("How are you today?", s2)
         assertEquals(" ", buffer.toString())
 
-        // deltaLen = 14 + 7 = 21 (chars from delta fragments)
-        // fullText = "Hello. How are you today?" (25 chars)
-        // suffix = fullText[21:] = "y?" — but that's not a full sentence boundary
-        // The actual onFinalContent in ConversationViewModel does:
-        //   sentenceBuffer.append(fullText, deltaLen, fullText.length)
-        //   extractSentences()
-        val fullText = "Hello. How are you today?"
-        val deltaLen = 21
-        if (deltaLen > 0 && deltaLen < fullText.length) {
-            buffer.setLength(0)
-            // Only append the portion NOT already in deltas
-            buffer.append(fullText, deltaLen, fullText.length)
-            // This appends "ay?" — no complete sentence to extract
-            val s3 = SentenceSplitter.takeNext(buffer)
-            assertNull("New suffix after delta coverage may not form complete sentence", s3)
-        }
+        // Final content is compared with the text already streamed, then only its
+        // suffix is appended. The pending buffer is preserved across that append.
+        // (There is no delta-length cursor: streamed text is the source of truth.)
+        val streamedText = "Hello. How are you today?"
+        val fullText = "Hello. How are you today? Next sentence. Tail"
+        val suffix = fullText.removePrefix(streamedText)
+        buffer.append(suffix)
+        val s3 = SentenceSplitter.takeNext(buffer)
+        assertEquals("Next sentence.", s3)
+        assertEquals(" Tail", buffer.toString())
     }
 }
