@@ -37,6 +37,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         viewModelScope.launch {
             notice.value = null
+            val s = settingsStore.settings.first()
             val local = repo.list()
             val remote = fetchServerSessions()
             items.value = merge(local, remote)
@@ -102,9 +103,21 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             // If this is a SESSIONS conversation bound to the current server,
             // try to refresh messages from the server (authoritative copy).
             val s = settingsStore.settings.first()
-            if (s.isConfigured && repo.transport == ChatTransportKind.SESSIONS &&
-                repo.sessionId != null && repo.origin == originIdentity(s.baseUrl)) {
+            if (s.isConfigured && repo.transport == ChatTransportKind.SESSIONS && repo.sessionId != null) {
                 val client = HermesClient(s.baseUrl, s.apiKey)
+                val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
+                if (gate is ConversationRepository.RebindOutcome.BlockedAuth) {
+                    notice.value = "Authentication failed while verifying this session."
+                    onReady(); return@launch
+                }
+                if (gate is ConversationRepository.RebindOutcome.BlockedMissing) {
+                    notice.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                    onReady(); return@launch
+                }
+                if (gate is ConversationRepository.RebindOutcome.BlockedRetryable) {
+                    notice.value = "Couldn't verify history; try again."
+                    onReady(); return@launch
+                }
                 client.getSessionMessages(repo.sessionId!!).fold(
                     onSuccess = { page ->
                         val msgs = page.data
@@ -134,11 +147,19 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { notice.value = "Configure Hermes in Settings first"; return@launch }
             val client = HermesClient(s.baseUrl, s.apiKey)
-            val origin = originIdentity(s.baseUrl)
+            val origin = originIdentity(s.baseUrl, s.apiKey)
 
-            // Resolve capabilities to pick the right transport
+            // Resolve capabilities to pick the right transport — fail-closed on UNKNOWN.
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            val transport = if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
+            val transport = when (caps.state) {
+                CapabilityState.SUPPORTED -> if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
+                CapabilityState.UNSUPPORTED -> ChatTransportKind.LEGACY_CHAT
+                else -> null // UNKNOWN or caps null → fail-closed: no transport, no import
+            }
+            if (transport == null) {
+                notice.value = "Server capabilities could not be verified. Session import skipped."
+                return@launch
+            }
 
             client.getSessionMessages(serverSessionId).fold(
                 onSuccess = { page ->

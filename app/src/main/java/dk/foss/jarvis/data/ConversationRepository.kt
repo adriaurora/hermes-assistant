@@ -5,6 +5,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import dk.foss.jarvis.hermes.ChatMessage
 import dk.foss.jarvis.hermes.ChatTransportKind
+import dk.foss.jarvis.hermes.HermesClient
+import dk.foss.jarvis.hermes.HermesHttpError
+import dk.foss.jarvis.hermes.originIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +21,17 @@ import dk.foss.jarvis.net.E2eLog
  * Persists to [ConversationStore] so conversations can be reopened and continued.
  */
 class ConversationRepository internal constructor(private val store: ConversationStore) {
+
+    sealed class RebindOutcome {
+        object VerifiedRebound : RebindOutcome()
+        object NotNeeded : RebindOutcome()
+        data class BlockedAuth(val error: Throwable) : RebindOutcome()
+        data class BlockedMissing(val error: Throwable) : RebindOutcome()
+        data class BlockedRetryable(val error: Throwable) : RebindOutcome()
+    }
+    private val switchListeners = mutableListOf<() -> Unit>()
+    fun onConversationSwitched(listener: () -> Unit) { switchListeners += listener }
+    private fun switched() { switchListeners.toList().forEach { it() } }
 
     // App-lifetime scope so a fire-and-forget save survives a ViewModel being cleared
     // (viewModelScope is cancelled BEFORE onCleared runs, which would drop the last save).
@@ -50,6 +64,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         title = ""
         createdAt = System.currentTimeMillis()
         dirty = false
+        switched()
     }
 
     suspend fun open(id: String) {
@@ -61,8 +76,9 @@ class ConversationRepository internal constructor(private val store: Conversatio
         transport = c.transport; origin = c.origin; lastUsedAt = c.lastUsedAt
         messages.clear()
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
-        E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} origin=${c.origin} msgs=${c.messages.size}")
+        E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} msgs=${c.messages.size}")
         dirty = false
+        switched()
     }
 
     /**
@@ -81,9 +97,41 @@ class ConversationRepository internal constructor(private val store: Conversatio
         dirty = true
     }
 
-    fun bindSession(origin: String, sessionId: String, transport: ChatTransportKind) { E2eLog.log("bindSession origin=$origin sid=$sessionId transport=$transport"); this.origin = origin; this.sessionId = sessionId; this.transport = transport; dirty = true }
+    fun bindSession(origin: String, sessionId: String, transport: ChatTransportKind) {
+        E2eLog.log("bindSession sid=$sessionId transport=$transport")
+        // An existing identity may only be changed by verifySessionForCurrentOrigin.
+        if (this.sessionId == null || this.origin == origin) this.origin = origin
+        this.sessionId = sessionId; this.transport = transport; dirty = true
+    }
     /** Bind origin + transport before the first server call, so a failed session creation stays retryable as Sessions. */
-    fun bindTransport(origin: String, transport: ChatTransportKind) { this.origin = origin; this.transport = transport; dirty = true }
+    fun bindTransport(origin: String, transport: ChatTransportKind) {
+        if (sessionId == null || this.origin == origin) this.origin = origin
+        this.transport = transport; dirty = true
+    }
+
+    /** Verify an existing Sessions id with the current credentials before rebinding it. */
+    suspend fun verifySessionForCurrentOrigin(client: HermesClient, baseUrl: String, apiKey: String): RebindOutcome {
+        val sid = sessionId ?: return RebindOutcome.NotNeeded
+        if (transport != ChatTransportKind.SESSIONS) return RebindOutcome.NotNeeded
+        val current = originIdentity(baseUrl, apiKey)
+        if (origin == current) return RebindOutcome.NotNeeded
+        return client.getSession(sid).fold(
+            onSuccess = {
+                origin = current
+                store.rebindOrigin(activeId, current)
+                dirty = false
+                RebindOutcome.VerifiedRebound
+            },
+            onFailure = { e ->
+                val h = e as? HermesHttpError
+                when {
+                    h?.isAuth == true -> RebindOutcome.BlockedAuth(e)
+                    h?.isSessionMissing == true || h?.code == 404 -> RebindOutcome.BlockedMissing(e)
+                    else -> RebindOutcome.BlockedRetryable(e)
+                }
+            }
+        )
+    }
     fun markTransport(kind: ChatTransportKind) { transport = kind; dirty = true }
     fun markUsed() { lastUsedAt = System.currentTimeMillis(); dirty = true }
     fun lastUserTurnText(): String? = messages.lastOrNull { it.role == "user" && !it.isError }?.text
@@ -160,6 +208,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         store.delete(id)
         if (id == activeId) startNew()
     }
+
 
     companion object {
         @Volatile private var instance: ConversationRepository? = null

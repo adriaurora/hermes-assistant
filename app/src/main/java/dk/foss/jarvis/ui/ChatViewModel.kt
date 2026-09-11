@@ -52,6 +52,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Model requested while no server session existed yet; applied on first session id. */
     var pendingOption: ModelOption? = null
 
+    init { repo.onConversationSwitched { pendingOption = null } }
+
     private var currentSource: EventSource? = null
     private var activeTurnJob: kotlinx.coroutines.Job? = null
     private var turnInFlight = false
@@ -76,7 +78,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
             modelLoading.value = true
             val client = HermesClient(s.baseUrl, s.apiKey)
-            val origin = originIdentity(s.baseUrl)
+            val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
+            E2eLog.log("refreshModel gate=${gate::class.simpleName}")
+            when (gate) {
+                is ConversationRepository.RebindOutcome.BlockedAuth,
+                is ConversationRepository.RebindOutcome.BlockedMissing,
+                is ConversationRepository.RebindOutcome.BlockedRetryable -> {
+                    modelLoading.value = false
+                    modelError.value = "Session verification failed; try again."
+                    return@launch
+                }
+                else -> Unit
+            }
+            val origin = originIdentity(s.baseUrl, s.apiKey)
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
 
             if (caps.features.model_options && caps.features.session_model_lock) {
@@ -99,7 +113,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     modelOptions.value = flattenModels(it)
                     modelDefault.value = it.model
                     modelLoading.value = false
-                    syncLabelWithServer(client)
+                     syncLabelWithServer(client, s.baseUrl, s.apiKey)
                 },
                 onFailure = {
                     modelLoading.value = false
@@ -125,8 +139,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             if (sid.isNullOrEmpty()) {
                 // No server session yet — remember the intent.
-                if (option != null) pendingOption = option
+                // Incondicional: elegir Automatic (option == null) LIMPIA la pendiente,
+                // y elegir un modelo específico la establece.
+                pendingOption = option
                 return@launch
+            }
+
+            val client = HermesClient(s.baseUrl, s.apiKey)
+            val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
+            E2eLog.log("chooseModel gate=${gate::class.simpleName}")
+            when (gate) {
+                is ConversationRepository.RebindOutcome.BlockedAuth -> { modelError.value = "Authentication failed while verifying this session."; return@launch }
+                is ConversationRepository.RebindOutcome.BlockedMissing -> { modelError.value = "This session no longer exists."; return@launch }
+                is ConversationRepository.RebindOutcome.BlockedRetryable -> { modelError.value = "Couldn't verify this session; try again."; return@launch }
+                else -> Unit
             }
 
             // Check selector availability first
@@ -136,7 +162,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
 
-            val client = HermesClient(s.baseUrl, s.apiKey)
             val result = if (option == null) client.clearSessionModel(sid)
             else client.setSessionModel(sid, option.modelId)
 
@@ -181,14 +206,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = {
                     modelError.value = "Model couldn't be pinned to this session: ${it.message?.take(120)}"
-                    syncLabelWithServer(client)
+                     syncLabelWithServer(client, s.baseUrl, s.apiKey)
                 },
             )
         }
     }
 
     /** Ask the server what model this session is actually pinned to (null = default). */
-    private suspend fun syncLabelWithServer(client: HermesClient) {
+    private suspend fun syncLabelWithServer(client: HermesClient, baseUrl: String, apiKey: String) {
         val sid = repo.sessionId
         E2eLog.log("syncLabel sid=${sid ?: "null"}")
         if (sid.isNullOrEmpty()) {
@@ -196,6 +221,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             effectiveRoute.value = null
             modelLabel.value = "Automatic"
             return
+        }
+        val gate = repo.verifySessionForCurrentOrigin(client, baseUrl, apiKey)
+        E2eLog.log("syncLabel gate=${gate::class.simpleName}")
+        when (gate) {
+            is ConversationRepository.RebindOutcome.BlockedAuth,
+            is ConversationRepository.RebindOutcome.BlockedMissing,
+            is ConversationRepository.RebindOutcome.BlockedRetryable -> return
+            else -> Unit
         }
         client.getSession(sid).fold(
             onSuccess = { env ->
@@ -230,6 +263,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         effectiveRoute.value = null
         sendBlocked.value = null
         transportNotice.value = null
+        pendingOption = null
     }
 
     fun cancel() {
@@ -243,25 +277,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissNotConfigured() { notConfigured.value = false }
 
-    /** Called from ChatScreen after a conversation is opened/switched. */
-    fun onConversationResumed() {
-        viewModelScope.launch {
-            val s = settingsStore.settings.first()
-            if (!s.isConfigured) return@launch
-            val origin = originIdentity(s.baseUrl)
-            if (repo.transport == ChatTransportKind.SESSIONS && repo.origin != origin) {
-                sendBlocked.value = "This conversation is bound to a different server. Start a new conversation from History to continue."
-            } else {
-                sendBlocked.value = null
-            }
-            if (repo.transport == ChatTransportKind.LEGACY_CHAT) {
-                transportNotice.value = "This conversation uses the legacy chat transport."
-            } else {
-                transportNotice.value = null
-            }
-        }
-    }
-
     /** Public entry point: routes through the transport-aware decision engine. */
     fun sendUserMessage(userText: String) {
         val text = userText.trim()
@@ -274,12 +289,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!s.isConfigured) { notConfigured.value = true; return@launch }
 
                 val client = HermesClient(s.baseUrl, s.apiKey)
-                val origin = originIdentity(s.baseUrl)
-                val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
                 val hasMessages = repo.messages.any { !it.isError }
                 E2eLog.log("send activeId=${repo.activeConversationId} sid=${repo.sessionId} hasMessages=$hasMessages")
 
-                when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
+                when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey, hasMessages)) {
+                    is ContinuationPlan.Blocked -> {
+                        when (plan.outcome) {
+                            is ConversationRepository.RebindOutcome.BlockedAuth -> appendSystemError("Authentication failed while verifying this session.")
+                            is ConversationRepository.RebindOutcome.BlockedMissing -> appendSystemError("This session no longer exists (session_not_found).")
+                            is ConversationRepository.RebindOutcome.BlockedRetryable -> appendSystemError("Couldn't verify this session; try again.")
+                            else -> Unit
+                        }
+                        return@launch
+                    }
+                    is ContinuationPlan.Send -> when (val d = plan.decision) {
                     is ChatTransportDecision.Blocked -> {
                         appendSystemError(d.reason)
                         return@launch
@@ -291,6 +314,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is ChatTransportDecision.Legacy -> sendLegacy(client, text)
                     is ChatTransportDecision.Sessions -> sendSessions(client, d.features, text)
+                    }
                 }
             } finally {
                 turnInFlight = false
@@ -350,7 +374,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, userText: String) {
-        val origin = originIdentity(settingsStore.settings.first().baseUrl)
+        val s = settingsStore.settings.first()
+        val origin = originIdentity(s.baseUrl, s.apiKey)
         if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
         val queuedText = repo.queueFirstTurn(userText)
         if (repo.sessionId == null) {
@@ -367,6 +392,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             },
                             onFailure = { modelError.value = "Couldn't pin model to session: ${it.message?.take(120)}" },
                         )
+                        // Consumir la opción pendiente independientemente de si el set tuvo éxito.
+                        // Invariante: la opción elegida en la conversación A no se re-aplica a la B.
+                        // Si el set falló, el error queda en modelError y el usuario puede reintentar.
+                        pendingOption = null
                     }
                 },
                 onFailure = {

@@ -12,8 +12,10 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.jsonObject
 import dk.foss.jarvis.net.E2eLog
+
+/** Indicates that an SSE connection ended without the server's terminal event. */
+class StreamClosedBeforeTerminalError : RuntimeException("stream closed before terminal event")
 
 /**
  * Talks to a Hermes `api_server`. This is the ONLY coupling to Hermes:
@@ -33,7 +35,9 @@ class HermesClient(
         fun onToolProgress(tool: String, label: String?, running: Boolean) {}
 
         fun onComplete() {}
+        /** Compatibility overload for older listeners; new callers receive the Throwable. */
         fun onError(message: String) {}
+        fun onError(error: Throwable) { onError(error.message ?: "Stream failed") }
         fun onFinalContent(text: String) {}
         fun onRuntime(info: RuntimeInfo) {}
     }
@@ -59,6 +63,7 @@ class HermesClient(
         // The stream signals end twice (the "[DONE]" event AND onClosed) — make sure
         // the terminal callback fires exactly once.
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val sawTerminalEvent = java.util.concurrent.atomic.AtomicBoolean(false)
 
         val listener = object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) {
@@ -67,7 +72,10 @@ class HermesClient(
 
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 if (data.isBlank() || data == "[DONE]") {
-                    if (data == "[DONE]" && finished.compareAndSet(false, true)) cb.onComplete()
+                    if (data == "[DONE]") {
+                        sawTerminalEvent.set(true)
+                        if (finished.compareAndSet(false, true)) cb.onComplete()
+                    }
                     return
                 }
                 if (type == TOOL_PROGRESS_EVENT) {
@@ -88,20 +96,23 @@ class HermesClient(
             }
 
             override fun onClosed(eventSource: EventSource) {
-                if (finished.compareAndSet(false, true)) cb.onComplete()
+                if (finished.compareAndSet(false, true)) {
+                    if (sawTerminalEvent.get()) cb.onComplete()
+                    else cb.onError(StreamClosedBeforeTerminalError())
+                }
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 if (!finished.compareAndSet(false, true)) return
-                val msg = when {
+                val error: Throwable = when {
                     response != null && !response.isSuccessful -> {
                         val detail = runCatching { response.body?.string() }.getOrNull()?.take(300)
-                        "HTTP ${response.code}${if (!detail.isNullOrBlank()) ": $detail" else ""}"
+                        httpError(response.code, detail.orEmpty(), response.message)
                     }
-                    t != null -> t.message ?: "Connection failed"
-                    else -> "Connection failed"
+                    t != null -> t
+                    else -> RuntimeException("Connection failed")
                 }
-                cb.onError(msg)
+                cb.onError(error)
             }
         }
         return EventSources.createFactory(Http.streaming).newEventSource(builder.build(), listener)
@@ -167,7 +178,7 @@ class HermesClient(
     /** POST /api/sessions/{id}/model — sets a model lock on a server session. */
     suspend fun setSessionModel(sessionId: String, model: String): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
-            val bodyString = """{"model":"$model"}"""
+            val bodyString = HermesJson.encodeToString(ModelSetRequest.serializer(), ModelSetRequest(model))
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/model")
                 .addHeader("Authorization", "Bearer $apiKey")
@@ -190,7 +201,8 @@ class HermesClient(
     /** POST /api/sessions/{id}/model — clears the model lock (model:null). */
     suspend fun clearSessionModel(sessionId: String): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
-            val bodyString = """{"model":null}"""
+            // The API distinguishes an explicit null (clear) from an omitted field.
+            val bodyString = "{\"model\":null}"
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/model")
                 .addHeader("Authorization", "Bearer $apiKey")
@@ -217,7 +229,7 @@ class HermesClient(
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) throw httpError(resp.code, text, resp.message)
-                parseCapabilities(text)
+                parseCapabilities(text) ?: error("unrecognized capabilities schema")
             }
         }
     }
@@ -245,6 +257,7 @@ class HermesClient(
             .addHeader("Authorization", "Bearer $apiKey").addHeader("Accept", "text/event-stream")
             .post(body.toRequestBody(JSON_MEDIA))
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val sawTerminalEvent = java.util.concurrent.atomic.AtomicBoolean(false)
         val listener = object : EventSourceListener() {
             override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
                 if (finished.get()) return
@@ -256,16 +269,29 @@ class HermesClient(
                     }
                     "assistant.completed" -> runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).content }.getOrNull()?.let(cb::onFinalContent)
                     "tool.started", "tool.progress", "tool.completed", "tool.failed" -> runCatching { HermesJson.decodeFromString(ToolProgress.serializer(), data) }.getOrNull()?.let { cb.onToolProgress(it.tool, it.label, type == "tool.started" || type == "tool.progress" || it.status.equals("running", true)) }
-                    "run.completed" -> { runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).runtime }.getOrNull()?.let(cb::onRuntime); if (finished.compareAndSet(false, true)) cb.onComplete() }
-                    "done" -> if (finished.compareAndSet(false, true)) cb.onComplete()
-                    "error" -> if (finished.compareAndSet(false, true)) cb.onError(runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).message ?: HermesJson.decodeFromString(SessionSseData.serializer(), data).error }.getOrNull() ?: parseErrorBody(data).second ?: data.take(200))
+                    "run.completed" -> { sawTerminalEvent.set(true); runCatching { HermesJson.decodeFromString(SessionSseData.serializer(), data).runtime }.getOrNull()?.let(cb::onRuntime); if (finished.compareAndSet(false, true)) cb.onComplete() }
+                    "done" -> { sawTerminalEvent.set(true); if (finished.compareAndSet(false, true)) cb.onComplete() }
+                    "error" -> if (finished.compareAndSet(false, true)) {
+                        val parsed = parseErrorBody(data)
+                        cb.onError(HermesHttpError(if (parsed.first == "session_not_found") 404 else null, parsed.first, data.take(200), parsed.second ?: data.take(200)))
+                    }
                 }
             }
-            override fun onClosed(es: EventSource) { if (finished.compareAndSet(false, true)) cb.onComplete() }
+            override fun onClosed(es: EventSource) {
+                E2eLog.log("sse closed terminal=${sawTerminalEvent.get()}")
+                if (finished.compareAndSet(false, true)) {
+                    if (sawTerminalEvent.get()) cb.onComplete()
+                    else cb.onError(StreamClosedBeforeTerminalError())
+                }
+            }
             override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+                E2eLog.log("sse failure code=${response?.code ?: "null"}")
                 if (!finished.compareAndSet(false, true)) return
-                val msg = if (response != null && !response.isSuccessful) "HTTP ${response.code}${runCatching { response.body?.string() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}" else t?.message ?: "Connection failed"
-                cb.onError(msg)
+                val error: Throwable = if (response != null && !response.isSuccessful) {
+                    val detail = runCatching { response.body?.string() }.getOrNull().orEmpty()
+                    httpError(response.code, detail, response.message)
+                } else t ?: RuntimeException("Connection failed")
+                cb.onError(error)
             }
         }
         return EventSources.createFactory(Http.streaming).newEventSource(builder.build(), listener)
@@ -273,6 +299,7 @@ class HermesClient(
 
     suspend fun sendSessionTurn(sessionId: String, message: String): Result<SessionTurnResult> = withContext(Dispatchers.IO) {
         runCatching {
+            E2eLog.log("chat transport=SESSIONS sid=$sessionId endpoint=POST /api/sessions/$sessionId/chat")
             val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat").addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(JSON_MEDIA)).build()
@@ -314,6 +341,7 @@ class HermesClient(
     }
 
     @Serializable private data class SessionIdOnly(val id: String)
+    @Serializable private data class ModelSetRequest(val model: String? = null)
     @Serializable private data class SessionSseData(
         val delta: String? = null, val content: String? = null, val message: String? = null,
         val error: String? = null, val detail: String? = null, val runtime: RuntimeInfo? = null,

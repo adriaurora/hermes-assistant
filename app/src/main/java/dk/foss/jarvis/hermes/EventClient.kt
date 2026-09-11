@@ -118,18 +118,9 @@ class EventClient(
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         fun encoded(value: String) = URLEncoder.encode(value, "UTF-8")
         internal fun deviceRevokePath(deviceId: String) = "api/devices/${encoded(deviceId)}"
-        /** Canonical identity used for connection changes (not URL text). */
-        fun originIdentity(baseUrl: String): String = runCatching {
-            val uri = URI(baseUrl.trim().trimEnd('/'))
-            val scheme = uri.scheme.lowercase()
-            val host = uri.host.lowercase()
-            val port = if (uri.port != -1) uri.port else when (scheme) {
-                "http" -> 80
-                "https" -> 443
-                else -> -1
-            }
-            "$scheme://$host:$port"
-        }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
+        /** Legacy host identity used by push registration transitions; delegated to ChatTransport helpers. */
+        @Deprecated("Use legacyOriginIdentity for push identity; use originIdentity(baseUrl, apiKey) for chat", level = DeprecationLevel.WARNING)
+        fun originIdentity(baseUrl: String): String = legacyOriginIdentity(baseUrl)
         internal fun fcmRegisterBody(token: String, deviceId: String? = null) =
             HermesJson.encodeToString(FcmRegisterBody.serializer(), FcmRegisterBody("fcm", token, deviceId))
         internal fun fcmTokenBody(token: String) =

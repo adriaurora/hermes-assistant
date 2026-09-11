@@ -30,6 +30,7 @@ data class ChatRequest(
     val stream: Boolean = true,
 )
 
+
 /** Shared wire format: unknown fields tolerated, nulls omitted from output. */
 @OptIn(ExperimentalSerializationApi::class)
 val HermesJson: Json = Json {

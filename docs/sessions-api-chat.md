@@ -29,7 +29,11 @@ true. The model selector requires both `model_options` and
 ## 3. Conversation ↔ session binding
 
 The persisted `Conversation` fields are `transport: ChatTransportKind?`,
-`origin` (normalized `scheme://host:port`), `sessionId`, and `lastUsedAt`.
+`origin` (the v2 identity: normalized full base URL, including path, plus a
+SHA-256 fingerprint of the API key), `sessionId`, and `lastUsedAt`. Older
+`scheme://host:port` origins are retained as legacy data and are never claimed
+locally; a Sessions conversation is rebound only after an authenticated GET of
+its session succeeds.
 `ChatTransportKind` is either `LEGACY_CHAT` or `SESSIONS`. A session created on
 origin A is never sent to origin B; origin isolation is enforced by
 `ChatTransportSelector`.

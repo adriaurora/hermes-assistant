@@ -10,6 +10,7 @@ import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.JarvisSettings
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.*
+import dk.foss.jarvis.net.E2eLog
 import dk.foss.jarvis.voice.AndroidTts
 import dk.foss.jarvis.voice.SpeechInput
 import dk.foss.jarvis.voice.TtsEngine
@@ -57,6 +58,10 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private var streamDone = false
     private var turn = 0 // bumped each turn; stale async callbacks check this and bail
     private var retriedThisTurn = false
+    /** Running count of characters received via SSE deltas this turn. Used by
+     *  onFinalContent to avoid re-enqueueing speech that was already spoken from
+     *  delta fragments. */
+    private var deltaLen = 0
 
     // Speak a complete sentence that's been sitting in the buffer once the stream
     // goes quiet (e.g. the agent paused to run a tool), not only when more text arrives.
@@ -120,6 +125,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         reply.value = ""
         error.value = null
         hint.value = null
+        deltaLen = 0
     }
 
     /**
@@ -183,18 +189,27 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         state.value = ConvState.Thinking
         working.value = true
         main.postDelayed(stallIndicator, STALL_MS)
-        repo.addMessage("user", userText)
 
         val s = settings ?: return
         val client = HermesClient(s.baseUrl, s.apiKey)
-        val origin = originIdentity(s.baseUrl)
+        // Decide transport BEFORE adding the user message so a fresh conversation
+        // sees hasMessages=false and picks Sessions when capabilities are modern.
         val hasMessages = repo.messages.any { !it.isError }
 
-        // Resolve caps in a coroutine to decide transport
+        // Resolve continuity and transport at the repository/transport boundary.
         viewModelScope.launch {
-            val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-
-            when (val d = ChatTransportSelector.decide(caps, repo.transport, repo.origin, origin, hasMessages)) {
+            when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey, hasMessages)) {
+                is ContinuationPlan.Blocked -> {
+                    val message = when (plan.outcome) {
+                        is ConversationRepository.RebindOutcome.BlockedAuth -> "Authentication failed while verifying this session."
+                        is ConversationRepository.RebindOutcome.BlockedMissing -> "This session no longer exists (session_not_found)."
+                        is ConversationRepository.RebindOutcome.BlockedRetryable -> "Couldn't verify this session; try again."
+                        else -> return@launch
+                    }
+                    onMain { error.value = message; goIdle() }
+                    return@launch
+                }
+                is ContinuationPlan.Send -> when (val d = plan.decision) {
                 is ChatTransportDecision.Blocked -> {
                     onMain {
                         error.value = d.reason
@@ -209,8 +224,15 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
-                is ChatTransportDecision.Legacy -> sendLegacy(client, myTurn)
-                is ChatTransportDecision.Sessions -> sendSessions(client, d.features, myTurn, s.baseUrl)
+                is ChatTransportDecision.Legacy -> {
+                    repo.addMessage("user", userText)
+                    sendLegacy(client, myTurn)
+                }
+                is ChatTransportDecision.Sessions -> {
+                    repo.addMessage("user", userText)
+                    sendSessions(client, d.features, myTurn, s.baseUrl, s.apiKey)
+                }
+                }
             }
         }
     }
@@ -259,9 +281,9 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         })
     }
 
-    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, myTurn: Int, baseUrl: String) {
+    private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, myTurn: Int, baseUrl: String, apiKey: String) {
         val userText = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text ?: ""
-        val origin = originIdentity(baseUrl)
+        val origin = originIdentity(baseUrl, apiKey)
         if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
 
         // If no server session yet, create one first
@@ -309,11 +331,23 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
             override fun onFinalContent(text: String) = onMain {
                 if (turn != myTurn) return@onMain
-                // Replace the accumulated text exactly once (no duplication)
+                // Replace the accumulated text exactly once (no duplication).
+                // For TTS: only enqueue the portion NOT already spoken from deltas.
                 reply.value = text
-                sentenceBuffer.setLength(0)
-                sentenceBuffer.append(text)
-                extractSentences()
+                if (deltaLen > 0 && deltaLen < text.length) {
+                    // Delta fragments were received and the final text is longer.
+                    // Enqueue only the suffix that hasn't been spoken yet.
+                    sentenceBuffer.setLength(0)
+                    sentenceBuffer.append(text, deltaLen, text.length)
+                    extractSentences()
+                } else if (deltaLen == 0) {
+                    // No deltas arrived (e.g. non-streaming path): enqueue the full text.
+                    sentenceBuffer.setLength(0)
+                    sentenceBuffer.append(text)
+                    extractSentences()
+                }
+                // else: deltaLen >= text.length — deltas already covered the full text,
+                // nothing new to enqueue.
                 pendingText.value = ""
             }
 
@@ -339,19 +373,20 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 pump()
             }
 
-            override fun onError(message: String) = onMain {
+            override fun onError(streamError: Throwable) = onMain {
                 if (turn != myTurn) return@onMain
+                val hermesErr = streamError as? HermesHttpError
+                E2eLog.log("voice stream error=${streamError::class.simpleName}${hermesErr?.let { " code=${it.code}" } ?: ""}")
                 main.removeCallbacks(stallIndicator)
                 working.value = false
                 stalled.value = false
                 toolLabel.value = null
-                val hermesErr = message as? HermesHttpError
                 if (hermesErr?.isSessionMissing == true) {
                     error.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
                 } else if (hermesErr?.isAuth == true) {
                     error.value = "Authentication failed (401/403). Check the API key in Settings."
                 } else {
-                    error.value = message
+                    error.value = streamError.message ?: "Stream failed"
                 }
                 goIdle()
             }
@@ -398,6 +433,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     /** A token arrived: show it, and speak as soon as a full sentence is available. */
     private fun onTextDelta(delta: String) {
         reply.value += delta
+        deltaLen += delta.length
         sentenceBuffer.append(delta)
         extractSentences()
         pendingText.value = sentenceBuffer.toString().trim()
@@ -497,6 +533,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         speakingIndex.value = -1
         pendingText.value = ""
         spokenCount = 0
+        deltaLen = 0
         state.value = ConvState.Idle
         hint.value = null
         // Save the conversation (covers turns that ended in an error/cancel, not just

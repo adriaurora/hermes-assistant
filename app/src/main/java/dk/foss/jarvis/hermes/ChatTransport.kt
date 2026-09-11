@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import dk.foss.jarvis.net.E2eLog
 
@@ -33,6 +34,7 @@ fun parseErrorBody(body: String): Pair<String?, String?> = runCatching {
         }
         error != null -> null to error.jsonPrimitive.contentOrNull
         obj["detail"] != null -> null to obj["detail"]?.jsonPrimitive?.contentOrNull
+        obj["message"] != null -> null to obj["message"]?.jsonPrimitive?.contentOrNull
         obj["code"] != null -> obj["code"]?.jsonPrimitive?.contentOrNull to null
         else -> null to null
     }
@@ -55,8 +57,8 @@ object ChatTransportSelector {
         ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Legacy
         ChatTransportKind.SESSIONS -> if (!originMatch) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
         null -> when {
-            hasMessages -> ChatTransportDecision.Legacy
             features == null || features.state == CapabilityState.UNKNOWN -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
+            hasMessages -> ChatTransportDecision.Legacy
             features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Legacy
             features.features.session_chat -> ChatTransportDecision.Sessions(features.features)
             else -> ChatTransportDecision.Legacy
@@ -68,9 +70,38 @@ object ChatTransportSelector {
     }
 }
 
-fun originIdentity(baseUrl: String): String = runCatching {
+/**
+ * Canonical connection identity for conversation binding and origin isolation.
+ *
+ * Builds a stable hash from the full base URL (scheme + host lowercased, default port folded,
+ * path preserved, no trailing slash) combined with a short non-reversible fingerprint of the API key
+ * (full 64-hex SHA-256). If [apiKey] is null or blank only the URL forms the identity —
+ * documented so callers know conversations on the same host but different keys stay distinct.
+ */
+fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatching {
     val uri = URI(baseUrl.trim().trimEnd('/'))
-    val scheme = uri.scheme.lowercase(); val host = uri.host.lowercase()
-    val port = if (uri.port != -1) uri.port else if (scheme == "http") 80 else if (scheme == "https") 443 else -1
+    val scheme = uri.scheme.lowercase()
+    val host = uri.host.lowercase()
+    val defaultPort = if (scheme == "http") 80 else if (scheme == "https") 443 else -1
+    val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+    val path = uri.path.ifEmpty { "/" }
+    val urlPart = "$scheme://$host$port$path"
+    val keyHash = apiKey?.let { key ->
+        if (key.isBlank()) return@let null
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(key.toByteArray(Charsets.UTF_8))
+        md.digest().joinToString("") { "%02x".format(it) }
+    }
+    if (keyHash != null) "$urlPart-$keyHash" else urlPart
+}.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
+
+/** Legacy identity: only scheme://host:port (no path, no key hash). */
+@Deprecated("Use originIdentity(baseUrl, apiKey) for full isolation. Kept for migration.", level = DeprecationLevel.WARNING)
+fun legacyOriginIdentity(baseUrl: String): String = runCatching {
+    val uri = URI(baseUrl.trim().trimEnd('/'))
+    val scheme = uri.scheme.lowercase()
+    val host = uri.host.lowercase()
+    val defaultPort = if (scheme == "http") 80 else if (scheme == "https") 443 else -1
+    val port = if (uri.port != -1) uri.port else defaultPort
     "$scheme://$host:$port"
 }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }

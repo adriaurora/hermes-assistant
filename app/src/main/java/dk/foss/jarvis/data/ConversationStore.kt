@@ -55,4 +55,13 @@ class ConversationStore {
             }
             .sortedByDescending { it.updatedAt }
     }
+
+    /** Atomically rebind one already authenticated conversation. */
+    suspend fun rebindOrigin(id: String, newOrigin: String) = withContext(Dispatchers.IO) {
+        load(id)?.let { save(it.copy(origin = newOrigin, updatedAt = System.currentTimeMillis())) }
+    }
+
+    /** Retained for source compatibility; origin migration is now authenticated at repository boundary. */
+    @Deprecated("Sessions origins require authenticated verification")
+    suspend fun migrateOrigins(currentBaseUrl: String, currentApiKey: String?) = Unit
 }
