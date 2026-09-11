@@ -38,7 +38,9 @@ class SessionFirstTurnTest {
         val seen = ConcurrentHashMap.newKeySet<String>()
         seen += "same"
         server.dispatcher = object : Dispatcher() { override fun dispatch(r: RecordedRequest): MockResponse {
-            val t = title(r); return if (!seen.add(t)) MockResponse().setResponseCode(400) else response("sid-${seen.size}")
+            val t = title(r); return if (!seen.add(t)) MockResponse().setResponseCode(400)
+                .setBody("{\"error\":{\"code\":\"session_exists\",\"message\":\"duplicate title\"}}")
+                else response("sid-${seen.size}")
         } }
         assertEquals("sid-2", createSessionForFirstTurn(client(), "same", "abcdefghijk").getOrThrow())
         val a = server.takeRequest(); val b = server.takeRequest()
@@ -58,16 +60,40 @@ class SessionFirstTurnTest {
         assertEquals(1, server.requestCount)
     }
 
-    @Test fun `validation failure retries only once`() = runBlocking {
+    @Test fun `400 with different rpc code is not retried`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400)
+            .setBody("{\"error\":{\"code\":\"invalid_request\",\"message\":\"bad title\"}}"))
+        assertTrue(createSessionForFirstTurn(client(), "x", "id").isFailure)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun `409 without rpc code retries with suffix`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(409))
+        server.enqueue(response("s2"))
+        assertEquals("s2", createSessionForFirstTurn(client(), "x", "abcdefghijk").getOrThrow())
+        assertEquals(2, server.requestCount)
+        assertEquals("x", title(server.takeRequest()))
+        assertEquals("x · abcdefgh", title(server.takeRequest()))
+    }
+
+    @Test fun `500 is not retried`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertTrue(createSessionForFirstTurn(client(), "x", "id").isFailure)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun `400 without rpc code is not retried`() = runBlocking {
         server.dispatcher = object : Dispatcher() { override fun dispatch(r: RecordedRequest) = MockResponse().setResponseCode(400) }
         assertTrue(createSessionForFirstTurn(client(), "x", "id").isFailure)
-        assertEquals(2, server.requestCount)
+        assertEquals(1, server.requestCount)
     }
 
     @Test fun `blank conversation title collision gets suffix`() = runBlocking {
         val seen = mutableSetOf<String>("Conversation")
         server.dispatcher = object : Dispatcher() { override fun dispatch(r: RecordedRequest): MockResponse {
-            return if (!seen.add(title(r))) MockResponse().setResponseCode(400) else response("s${seen.size}")
+            return if (!seen.add(title(r))) MockResponse().setResponseCode(400)
+                .setBody("{\"error\":{\"code\":\"session_exists\"}}")
+                else response("s${seen.size}")
         } }
         createSessionForFirstTurn(client(), "Conversation", "123456789").getOrThrow()
         assertEquals(2, server.requestCount)

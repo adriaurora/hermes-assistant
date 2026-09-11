@@ -10,6 +10,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Tests setSessionModel and clearSessionModel body contracts, and response decoding.
@@ -41,6 +43,16 @@ class ModelBodyContractTest {
         // Verify only the "model" key exists
         val keys = body.trim('{', '}').split(",").map { it.trim().split(":")[0].trim('"') }
         assertEquals(listOf("model"), keys)
+    }
+
+    @Test
+    fun `setSessionModel escapes quotes and backslashes`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val model = "provider\\\\name\"v1"
+        client().setSessionModel("s1", model)
+        val body = server.takeRequest().body.readUtf8()
+        val decoded = HermesJson.parseToJsonElement(body).jsonObject["model"]!!.jsonPrimitive.content
+        assertEquals(model, decoded)
     }
 
     // 2. clearSessionModel("s1") → body EXACTLY {"model":null}

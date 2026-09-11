@@ -237,6 +237,26 @@ class SessionSseParserTest {
         assertEquals(1, terminalCount)
     }
 
+    // 10b. Mid-stream disconnect fires onError, NOT onComplete
+    @Test
+    fun `mid_stream_disconnect_onError_not_onComplete`() = runBlocking {
+        val sse = buildSse("assistant.delta", """{"delta":"partial"}""")
+        server.enqueue(MockResponse()
+            .setHeader("Content-Type", "text/event-stream")
+            .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+            .setBody(sse))
+
+        val cb = TestSseCallbacks()
+        val es = client().streamSessionTurn("s1", "hi", cb)
+        await(cb)
+        es.cancel()
+
+        // Must fire onError (stream closed before terminal), NOT onComplete
+        assertTrue("Mid-stream disconnect must fire onError", cb.onErrorCalled)
+        assertTrue("Error must be non-null", cb.error != null)
+        assertEquals(0, cb.onCompleteCount)
+    }
+
     // 11. run.started / message.started / unknown event types → no callbacks
     @Test
     fun `run_started_no_callbacks`() = runBlocking {

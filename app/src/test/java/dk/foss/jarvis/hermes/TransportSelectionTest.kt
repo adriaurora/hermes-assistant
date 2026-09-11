@@ -55,9 +55,19 @@ class TransportSelectionTest {
         assertFalse(isLegacy(d))
     }
 
-    // 4. undecided + hasMessages → Legacy regardless of caps
+    // 3b. UNKNOWN + hasMessages → Blocked (fail-closed wins over sticky-legacy)
+    // This is the key regression test: hasMessages must NOT bypass fail-closed when convTransport is null.
     @Test
-    fun `undecided has messages yields Legacy regardless of caps`() {
+    fun `undecided has messages unknown still yields Blocked_fail_closed_wins`() {
+        val features = OriginCapabilities("https://h:1", CapabilityState.UNKNOWN)
+        val d = decide(features, null, null, "https://h:1", true)
+        assertTrue(isBlocked(d))
+        assertFalse(isLegacy(d))
+    }
+
+    // 4. undecided + hasMessages + SUPPORTED → Legacy (sticky-legacy, since caps confirmed)
+    @Test
+    fun `undecided has messages supported yields Legacy`() {
         val features = OriginCapabilities("https://h:1", CapabilityState.SUPPORTED, ServerFeatures(session_chat = true))
         val d = decide(features, null, null, "https://h:1", true)
         assertTrue(isLegacy(d))
@@ -107,5 +117,57 @@ class TransportSelectionTest {
     fun `legacy marker with messages yields Legacy`() {
         val d = decide(null, ChatTransportKind.LEGACY_CHAT, null, "https://h:1", true)
         assertTrue(isLegacy(d))
+    }
+
+    // 11. UNSUPPORTED with hasMessages → Legacy (fallback from caps, not from hasMessages)
+    @Test
+    fun `undecided has messages unsupported yields Legacy`() {
+        val features = OriginCapabilities("https://h:1", CapabilityState.UNSUPPORTED)
+        val d = decide(features, null, null, "https://h:1", true)
+        assertTrue(isLegacy(d))
+    }
+
+    // 12. UNKNOWN without hasMessages → Blocked (no messages means no commitment yet)
+    @Test
+    fun `undecided no messages unknown no msgs yields Blocked`() {
+        val features = OriginCapabilities("https://h:1", CapabilityState.UNKNOWN)
+        val d = decide(features, null, null, "https://h:1", false)
+        assertTrue(isBlocked(d))
+    }
+
+    // 13. Fresh conversation (hasMessages=false) + modern caps → Sessions,
+    //     NOT Legacy. This is the critical path for Task 1: decide transport
+    //     BEFORE adding the first user message.
+    @Test
+    fun `freshConversation_modernCaps_decides_Sessions_not_Legacy`() {
+        val features = OriginCapabilities(
+            "https://h:1",
+            CapabilityState.SUPPORTED,
+            ServerFeatures(session_chat = true, session_chat_streaming = true, model_options = true),
+        )
+        val d = decide(features, null, null, "https://h:1", false)
+        assertTrue(isSessions(d))
+        val s = d as ChatTransportDecision.Sessions
+        assertTrue(s.features.session_chat)
+        assertTrue(s.features.session_chat_streaming)
+    }
+
+    // 14. 401/500 caps error → UNKNOWN → Blocked, NEVER Legacy
+    @Test
+    fun `capsError_401_unknown_yields_Blocked_not_Legacy`() {
+        // Simulates a 401 from getCapabilities → CapabilityState.UNKNOWN
+        val features = OriginCapabilities("https://h:1", CapabilityState.UNKNOWN)
+        val d = decide(features, null, null, "https://h:1", false)
+        assertTrue(isBlocked(d))
+        assertFalse(isLegacy(d))
+    }
+
+    // 15. Network error caps → UNKNOWN → Blocked, NEVER Legacy
+    @Test
+    fun `capsNetworkError_unknown_yields_Blocked_not_Legacy`() {
+        val features = OriginCapabilities("https://h:1", CapabilityState.UNKNOWN)
+        val d = decide(features, null, null, "https://h:1", false)
+        assertTrue(isBlocked(d))
+        assertFalse(isLegacy(d))
     }
 }

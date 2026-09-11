@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -138,6 +139,7 @@ class SessionsMockE2eTest {
                         val body = request.body.clone().readUtf8()
                         val title = body.substringAfter("\"title\":\"").substringBefore("\"}")
                         if (!titles.add(title)) MockResponse().setResponseCode(400)
+                            .setBody("{\"error\":{\"code\":\"session_exists\"}}")
                         else MockResponse().setResponseCode(201).setBody("{\"session\":{\"id\":\"flow-${++nextId}\"}}")
                     }
                     request.path!!.contains("/chat/stream") -> MockResponse().setResponseCode(200)
@@ -169,5 +171,59 @@ class SessionsMockE2eTest {
         assertNotEquals(first, second); assertEquals(1, repo.messages.count { it.role == "user" })
         assertEquals(5, originA.requestCount)
         assertEquals(2, (0 until 5).map { originA.takeRequest()!!.path }.count { it!!.contains("/chat/stream") })
+    }
+
+    @Test
+    fun `partial stream is not persisted as successful completion`() = runBlocking {
+        val dir = temporaryFolder.newFolder("partial-persistence")
+        val store = ConversationStore(dir)
+        val repo = ConversationRepository(store)
+        repo.startNew()
+        repo.bindSession(base(originA), "partial-session", ChatTransportKind.SESSIONS)
+        repo.addMessage("user", "hello")
+        val partial = "assistant.delta:partial text"
+        originA.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream")
+                .setBody(sse("assistant.delta" to "{\"delta\":\"partial \"}", "assistant.delta" to "{\"delta\":\"text\"}"))
+                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+        )
+        val error = CountDownLatch(1)
+        val accumulated = StringBuilder()
+        var errorCalled = false
+        var completeCount = 0
+        client().streamSessionTurn("partial-session", "hello", object : HermesClient.StreamCallbacks {
+            override fun onDelta(textDelta: String) { accumulated.append(textDelta) }
+            override fun onComplete() { completeCount++; repo.addMessage("assistant", accumulated.toString()); error.countDown() }
+            override fun onError(streamError: Throwable) { errorCalled = true; error.countDown() }
+        })
+        assertTrue(error.await(5, TimeUnit.SECONDS))
+        assertTrue(errorCalled)
+        assertEquals(0, completeCount)
+        assertTrue(repo.messages.none { it.role == "assistant" })
+        repo.persist()
+        assertFalse(dir.resolve("${repo.activeConversationId}.json").readText().contains(partial.substringAfter(':')))
+
+        val positiveRepo = ConversationRepository(ConversationStore(temporaryFolder.newFolder("complete-persistence")))
+        positiveRepo.startNew()
+        positiveRepo.bindSession(base(originA), "complete-session", ChatTransportKind.SESSIONS)
+        originA.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream")
+                .setBody(sse("assistant.delta" to "{\"delta\":\"complete text\"}", "done" to "{}"))
+        )
+        val complete = CountDownLatch(1)
+        val positiveAccumulated = StringBuilder()
+        var positiveCompleteCount = 0
+        client().streamSessionTurn("complete-session", "hello", object : HermesClient.StreamCallbacks {
+            override fun onDelta(textDelta: String) { positiveAccumulated.append(textDelta) }
+            override fun onComplete() {
+                positiveCompleteCount++
+                positiveRepo.addMessage("assistant", positiveAccumulated.toString())
+                complete.countDown()
+            }
+            override fun onError(streamError: Throwable) { complete.countDown() }
+        })
+        assertTrue(complete.await(5, TimeUnit.SECONDS))
+        assertEquals(1, positiveCompleteCount)
+        assertTrue(positiveRepo.messages.any { it.role == "assistant" && it.text == "complete text" })
     }
 }

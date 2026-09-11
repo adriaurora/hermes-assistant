@@ -27,7 +27,7 @@ class CapabilitiesJsonTest {
                "unknown_flag":true}
             }
         """.trimIndent()
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertTrue(features.session_chat)
         assertTrue(features.session_chat_streaming)
         assertTrue(features.session_model_lock)
@@ -39,7 +39,7 @@ class CapabilitiesJsonTest {
     @Test
     fun `minimal envelope with only session_chat true`() {
         val json = """{"features":{"session_chat":true}}"""
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertTrue(features.session_chat)
         assertTrue(allOtherFalse(features))
     }
@@ -48,30 +48,27 @@ class CapabilitiesJsonTest {
     @Test
     fun `flat shape parses session_chat and model_options true`() {
         val json = """{"session_chat":true,"model_options":true}"""
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertTrue(features.session_chat)
         assertTrue(features.model_options)
     }
 
-    // 4. Empty object
+    // 4. Empty object is not a recognized capabilities schema.
     @Test
     fun `empty object yields all false no exception`() {
-        val features = parseCapabilities("{}")
-        assertTrue(allOtherFalse(features))
+        assertEquals(null, parseCapabilities("{}"))
     }
 
     // 5. Garbage
     @Test
     fun `garbage yields all false no exception`() {
-        val features = parseCapabilities("garbage {")
-        assertTrue(allOtherFalse(features))
+        assertEquals(null, parseCapabilities("garbage {"))
     }
 
     // 6. Empty string
     @Test
     fun `empty string yields all false no exception`() {
-        val features = parseCapabilities("")
-        assertTrue(allOtherFalse(features))
+        assertEquals(null, parseCapabilities(""))
     }
 
     // 7. Full envelope with all false (unknown keys still tolerated)
@@ -84,7 +81,7 @@ class CapabilitiesJsonTest {
                "session_model_clear":false,"model_options":false,"chat_completions":false}
             }
         """.trimIndent()
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertFalse(features.session_chat)
         assertFalse(features.session_chat_streaming)
         assertFalse(features.session_model_lock)
@@ -97,7 +94,7 @@ class CapabilitiesJsonTest {
     @Test
     fun `only model_options true`() {
         val json = """{"features":{"model_options":true}}"""
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertTrue(features.model_options)
         assertFalse(features.session_chat)
         assertFalse(features.session_chat_streaming)
@@ -110,7 +107,7 @@ class CapabilitiesJsonTest {
     @Test
     fun `chat_completions true`() {
         val json = """{"features":{"chat_completions":true}}"""
-        val features = parseCapabilities(json)
+        val features = parseCapabilities(json)!!
         assertTrue(features.chat_completions)
         assertFalse(features.session_chat)
         assertFalse(features.session_chat_streaming)
