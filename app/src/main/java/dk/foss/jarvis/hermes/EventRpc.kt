@@ -39,7 +39,7 @@ class HermesHttpException(val statusCode: Int, cause: Throwable? = null) : IOExc
 data class RpcErrorBody(val code: String, val message: String? = null, @kotlinx.serialization.SerialName("http_status") val httpStatus: Int? = null)
 
 @Serializable
-data class RpcRegisterResult(val device_id: String, val device_secret: String? = null, val state: String? = null, val existing: Boolean = false, @kotlinx.serialization.SerialName("legacy_reconciled") val legacy_reconciled: Boolean? = null)
+data class RpcRegisterResult(val device_id: String, val device_secret: String? = null, val state: String? = null, val existing: Boolean = false)
 
 @Serializable
 data class RpcDeviceStateResult(val device_id: String? = null, val state: String? = null, val event_id: String? = null)
@@ -56,7 +56,7 @@ private data class RpcEnvelope(
 )
 
 @Serializable private data class RpcPushBody(val type: String = "fcm", val token: String)
-@Serializable private data class RpcRegisterBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.register", val label: String, val push: RpcPushBody, val device_id: String? = null, val device_secret: String? = null, @kotlinx.serialization.SerialName("legacy_device_id") val legacy_device_id: String? = null)
+@Serializable private data class RpcRegisterBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.register", val label: String, val push: RpcPushBody, val device_id: String? = null, val device_secret: String? = null)
 @Serializable private data class RpcTokenBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.token.update", val device_id: String, val device_secret: String, val push_token: String)
 @Serializable private data class RpcRevokeBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.revoke", val device_id: String, val device_secret: String)
 @Serializable private data class RpcGetBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.get", val device_id: String, val device_secret: String, val event_id: String)
@@ -68,8 +68,8 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
     private val url = "${baseUrl.trimEnd('/')}/$RPC_PATH"
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null, legacyDeviceId: String? = null): Result<RpcRegisterResult> =
-        call(RpcRegisterBody(label = label, push = RpcPushBody(token = token), device_id = deviceId, device_secret = deviceSecret, legacy_device_id = legacyDeviceId), RpcRegisterResult.serializer())
+    suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null): Result<RpcRegisterResult> =
+        call(RpcRegisterBody(label = label, push = RpcPushBody(token = token), device_id = deviceId, device_secret = deviceSecret), RpcRegisterResult.serializer())
 
     suspend fun updateToken(token: String): Result<Unit> {
         val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))

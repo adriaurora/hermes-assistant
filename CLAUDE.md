@@ -15,7 +15,8 @@ There is **no wake word**, no always-on microphone, no third-party voice
 providers. The brain is always Hermes; this app only does ears (STT), mouth
 (TTS), face (Compose UI), and OS integration (assist role). The Hermes coupling
 lives in `hermes/HermesClient.kt` + `hermes/Models.kt` (chat) and, when FCM is
-configured, in `hermes/EventClient.kt` (device registration, event fetch/ACK).
+configured, in `push/` for device registration (V1 RPC `device.register`),
+event fetch/ACK, and push lifecycle management.
 
 Package: `dk.foss.jarvis`. Single Gradle module `:app`. No nav library, no DI
 framework, no companion server.
@@ -54,7 +55,7 @@ Verification = clean compile + tests + the running app on a device.
 
 | Layer | File(s) | Role |
 |---|---|---|
-| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: Sessions API for new conversations, legacy `/v1/chat/completions` for existing ones, and `/v1/models` as connection test. When FCM is configured, `hermes/EventClient.kt` adds device-registration and event REST endpoints. |
+| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: Sessions API for new conversations, legacy `/v1/chat/completions` for existing ones, and `/v1/models` as connection test. |
 | Shared HTTP | `net/Http.kt` | `Http.base` (bounded timeouts) + `Http.streaming` (`readTimeout(0)`). Reuse these; never build a new OkHttpClient. |
 | Secrets | `data/SecureStore.kt` | AES-256-GCM key held in `AndroidKeyStore`; encrypted blob in app-private
   SharedPreferences. Interfaces (`AeadCipher`, `SecretBlobStore`) are injectable for JVM tests. |
@@ -66,7 +67,7 @@ Verification = clean compile + tests + the running app on a device.
 | Assistant | `assist/JarvisInteractionService.kt`, `JarvisInteractionSessionService.kt`, `JarvisInteractionSession.kt`, `JarvisRecognitionService.kt` | Default-assistant role; long-press launches conversation mode. |
 | UI / design | `MainActivity.kt`, `ui/*Screen.kt`, `ui/Theme.kt`, `ui/JarvisDesign.kt` | Compose screens + the "Direction A" design system. |
 | Notifications | `push/FcmMessagingService.kt` | FCM `FirebaseMessagingService`; data-only wakes with `event_id` → WorkManager `FcmEventWorker`. |
-| Events | `hermes/EventClient.kt` | Authenticated REST: register/update/revoke device, fetch/ack/pending events. |
+| Events | `push/FcmEventWorker.kt`, `hermes/EventRpc.kt` | V1 RPC: device.register, event fetch/ack/pending, device token update/revoke. |
 | Delivery | `notifications/EventDelivery.kt`, `notifications/NotificationChannels.kt` | Dedup, fetch, post native notification, ACK (best-effort). |
 
 **Chat transport and session invariants.** `Conversation` persists the

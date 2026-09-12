@@ -1,3 +1,5 @@
+# ⚠️ HISTORICAL: This document describes the legacy device-ID reconciliation process which has been fully removed from the codebase (legacy_reconciled, legacy_device_id, RevokeV1Policy, and legacy enrollment paths deleted). Kept here only for historical reference.
+
 # FCM hardening × Wire Protocol v1 — Reconciliation Specification
 
 **Status:** COMPLETE (branch `reconcile/fcm-hardening-wire-v1`)

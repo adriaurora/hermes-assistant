@@ -30,14 +30,12 @@ class PushPluginUnavailableTest {
     fun `EnrollmentPolicy no registration`() {
         val action = EnrollmentPolicy.decide(false, false)
         assertEquals(EnrollmentAction.RegisterFresh::class, action::class)
-        if (action is EnrollmentAction.RegisterFresh) assertEquals(false, action.legacyRevokeFirst)
     }
 
     @Test
-    fun `EnrollmentPolicy has registration no secret`() {
+    fun `EnrollmentPolicy has registration no secret returns None`() {
         val action = EnrollmentPolicy.decide(true, false)
-        assertEquals(EnrollmentAction.RegisterFresh::class, action::class)
-        if (action is EnrollmentAction.RegisterFresh) assertEquals(true, action.legacyRevokeFirst)
+        assertEquals(EnrollmentAction.None, action)
     }
 
     @Test

@@ -40,13 +40,9 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             }
             is RegistryState.Registered -> {
                 val r = state.registration
-                val o = if (r.deviceSecret.isNullOrBlank()) {
-                    FcmRevokePolicy.RevokeOutcome.RevokeSuccess
-                } else {
-                    RevokeV1Policy.classify(
-                        EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
-                    )
-                }
+                val o = FcmRevokePolicy.classify(
+                    EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
+                )
                 when (o) {
                     FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.RevokeOutcome.CredentialRejected -> {
                         FcmRevokeCleanup.onComplete(registry, secure, prefs) {

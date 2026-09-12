@@ -109,25 +109,18 @@ object PushIngress {
             (e as? HermesHttpException)?.statusCode == 404 -> TokenSyncOutcome.PERMANENT
             else -> TokenSyncOutcome.RETRYABLE
         }
-        suspend fun registerFresh(legacyDeviceId: String? = null): TokenSyncOutcome {
+        suspend fun registerFresh(): TokenSyncOutcome {
             val label = Build.MODEL.takeIf { it.isNotBlank() } ?: "Android"
-            val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token, legacyDeviceId = legacyDeviceId)
+            val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token)
             return result.fold({ r -> if (r.device_secret.isNullOrBlank()) TokenSyncOutcome.PERMANENT else { registry.saveV1(r.device_id, r.device_secret, token, settings.baseUrl, settings.apiKey); schedulePendingSync(context); TokenSyncOutcome.REGISTERED } }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
         val hasSecret = existing?.deviceSecret?.isNotBlank() == true
-        val legacyClaim = when (state) {
-            is RegistryState.Registered -> if (!hasSecret) existing?.deviceId else null
-            RegistryState.Empty -> null
-        }
-        return when (val action = EnrollmentPolicy.decide(existing != null, hasSecret)) {
+        return when (EnrollmentPolicy.decide(existing != null, hasSecret)) {
             EnrollmentAction.None -> TokenSyncOutcome.PERMANENT
-            is EnrollmentAction.RegisterFresh -> {
-                if (action.legacyRevokeFirst && existing != null) runCatching { EventRpcClient(existing.hermesOrigin, existing.apiKey, existing.deviceId, existing.deviceSecret).revoke() }
-                registerFresh(legacyClaim)
-            }
+            is EnrollmentAction.RegisterFresh -> registerFresh()
             EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, existing.hermesOrigin, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> {
