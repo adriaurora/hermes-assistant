@@ -45,27 +45,30 @@ private val JsonPrimitive.contentOrNull get() = runCatching { content }.getOrNul
 /** Decision returned by [ChatTransportSelector.decide] about which chat transport to use. */
 sealed class ChatTransportDecision {
     data class Sessions(val features: ServerFeatures) : ChatTransportDecision()
-    object Legacy : ChatTransportDecision()
     data class Blocked(val reason: String) : ChatTransportDecision()
     data class Unavailable(val reason: String) : ChatTransportDecision()
 }
 
 object ChatTransportSelector {
-    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): ChatTransportDecision {
+    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String): ChatTransportDecision {
         val originMatch = convOrigin == currentOrigin
         val result = when (convTransport) {
-        ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Legacy
-        ChatTransportKind.SESSIONS -> if (!originMatch) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
+        ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Unavailable("This conversation uses an unsupported legacy chat transport. Start a new conversation.")
+        ChatTransportKind.SESSIONS -> when {
+            !originMatch -> ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.")
+            features?.state != CapabilityState.SUPPORTED -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
+            !features.features.session_chat -> ChatTransportDecision.Unavailable("This server does not support session chat. Start a new conversation on a compatible server.")
+            else -> ChatTransportDecision.Sessions(features.features)
+        }
         null -> when {
             features == null || features.state == CapabilityState.UNKNOWN -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
-            hasMessages -> ChatTransportDecision.Legacy
-            features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Legacy
+            features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Blocked("This server does not support session chat.")
             features.features.session_chat -> ChatTransportDecision.Sessions(features.features)
-            else -> ChatTransportDecision.Legacy
+            else -> ChatTransportDecision.Blocked("This server does not support session chat.")
         }
         }
         val caps = features?.features?.let { "session_chat=${it.session_chat},session_chat_streaming=${it.session_chat_streaming},model_options=${it.model_options},session_model_lock=${it.session_model_lock},session_model_clear=${it.session_model_clear}" } ?: "null"
-        E2eLog.log("transportDecision caps=$caps storedTransport=$convTransport originMatch=$originMatch hasMessages=$hasMessages -> ${result::class.simpleName}")
+        E2eLog.log("transportDecision caps=$caps storedTransport=$convTransport originMatch=$originMatch -> ${result::class.simpleName}")
         return result
     }
 }

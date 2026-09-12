@@ -189,7 +189,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeModelPicker() { modelPickerOpen.value = false }
 
-    /** Called from streamChat's onSessionId once the real server session id is known. */
+    /** Called when a session is created and bound to the active conversation. */
     fun onSessionCaptured(sessionId: String) {
         val pending = repo.pendingModelIntent ?: return
         if (pending is PendingModelIntent.Set) modelLabel.value = pending.label
@@ -300,10 +300,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!s.isConfigured) { notConfigured.value = true; return@launch }
 
                 val client = HermesClient(s.baseUrl, s.apiKey)
-                val hasMessages = repo.messages.any { !it.isError }
-                E2eLog.log("send activeId=${repo.activeConversationId} sid=${repo.sessionId} hasMessages=$hasMessages")
+                E2eLog.log("send activeId=${repo.activeConversationId} sid=${repo.sessionId}")
 
-                when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey, hasMessages)) {
+                when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey)) {
                     is ContinuationPlan.Blocked -> {
                         when (plan.outcome) {
                             is ConversationRepository.RebindOutcome.BlockedAuth -> appendSystemError("Authentication failed while verifying this session.")
@@ -323,8 +322,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         appendSystemError(d.reason)
                         return@launch
                     }
-                    is ChatTransportDecision.Legacy -> sendLegacy(client, text)
-                    is ChatTransportDecision.Sessions -> sendSessions(client, d.features, text)
+                     is ChatTransportDecision.Sessions -> sendSessions(client, d.features, text)
                     }
                 }
             } finally {
@@ -336,53 +334,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // Keep the old send() for backward compatibility (it delegates to sendUserMessage)
     @Deprecated("Use sendUserMessage", replaceWith = ReplaceWith("sendUserMessage(text)"))
     fun send(userText: String) = sendUserMessage(userText)
-
-    private suspend fun sendLegacy(client: HermesClient, userText: String) {
-        repo.addMessage("user", userText)
-        val history = repo.historyForRequest()
-        val assistantIndex = repo.addMessage("assistant", "")
-        isStreaming.value = true
-        activity.value = null
-
-        currentSource = client.streamChat(history, repo.sessionId, object : HermesClient.StreamCallbacks {
-            override fun onDelta(textDelta: String) = onMain {
-                repo.appendToMessage(assistantIndex, textDelta)
-            }
-
-            override fun onSessionId(id: String) {
-                repo.setSessionId(id)
-                onSessionCaptured(id)
-            }
-
-            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
-                activity.value = if (running) (label ?: tool) else null
-            }
-
-            override fun onComplete() = onMain {
-                isStreaming.value = false
-                currentSource = null
-                activity.value = null
-                viewModelScope.launch {
-                    if (repo.transport == null) repo.markTransport(ChatTransportKind.LEGACY_CHAT)
-                    repo.markUsed()
-                    repo.persist()
-                }
-            }
-
-            override fun onError(message: String) = onMain {
-                val cur = messages.getOrNull(assistantIndex)
-                if (cur != null && cur.text.isEmpty()) {
-                    repo.replaceMessage(assistantIndex, "⚠️ $message", isError = true)
-                } else {
-                    repo.addMessage("assistant", "⚠️ $message", isError = true)
-                }
-                isStreaming.value = false
-                currentSource = null
-                activity.value = null
-                viewModelScope.launch { repo.persist() }
-            }
-        })
-    }
 
     private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, userText: String) {
         val s = settingsStore.settings.first()

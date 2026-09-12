@@ -64,7 +64,6 @@ suspend fun resolveContinuation(
     client: HermesClient,
     baseUrl: String,
     apiKey: String,
-    hasMessages: Boolean,
 ): ContinuationPlan {
     return when (val gate = repo.verifySessionForCurrentOrigin(client, baseUrl, apiKey)) {
         is ConversationRepository.RebindOutcome.BlockedAuth,
@@ -77,7 +76,7 @@ suspend fun resolveContinuation(
             val currentOrigin = originIdentity(baseUrl, apiKey)
             val caps = CapabilityRegistry.capabilities(currentOrigin) { client.getCapabilities() }
             val decision = ChatTransportSelector.decide(
-                caps, repo.transport, repo.origin, currentOrigin, hasMessages,
+                caps, repo.transport, repo.origin, currentOrigin,
             )
             E2eLog.log("continuation caps=${caps.state} gate=${gateName(gate)} decision=${decision::class.simpleName}")
             ContinuationPlan.Send(decision)

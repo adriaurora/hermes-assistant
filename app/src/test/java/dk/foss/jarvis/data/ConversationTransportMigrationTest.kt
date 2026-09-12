@@ -284,13 +284,12 @@ class ConversationTransportMigrationTest {
         server.enqueue(capabilitiesResponse())
         val (repo, store) = repositoryWithLegacySessionsOrigin()
         val baseUrl = server.url("/").toString().trimEnd('/')
-        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key", true)
+        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key")
         val first = server.takeRequest()
         assertEquals("GET", first.method)
         assertEquals("/api/sessions/s1", first.path)
         assertEquals("Bearer new-key", first.getHeader("Authorization"))
         assertTrue(plan is ContinuationPlan.Send && (plan as ContinuationPlan.Send).decision is dk.foss.jarvis.hermes.ChatTransportDecision.Sessions)
-        assertTrue(plan !is ContinuationPlan.Send || plan.decision !is dk.foss.jarvis.hermes.ChatTransportDecision.Legacy)
         assertEquals(originIdentity(baseUrl, "new-key"), store.load(repo.activeConversationId)!!.origin)
     }
 
@@ -299,7 +298,7 @@ class ConversationTransportMigrationTest {
         server.enqueue(MockResponse().setResponseCode(401))
         val (repo, store) = repositoryWithLegacySessionsOrigin()
         val old = repo.origin
-        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key", true)
+        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key")
         assertTrue(plan is ContinuationPlan.Blocked && plan.outcome is ConversationRepository.RebindOutcome.BlockedAuth)
         assertEquals(1, server.requestCount)
         assertEquals(ChatTransportKind.SESSIONS, repo.transport)
@@ -310,7 +309,7 @@ class ConversationTransportMigrationTest {
     fun `legacyV1_persistedSessions_404_blocksMissing_withoutDowngrade`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"session_not_found"}"""))
         val (repo, _) = repositoryWithLegacySessionsOrigin()
-        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key", true)
+        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key")
         assertTrue(plan is ContinuationPlan.Blocked && plan.outcome is ConversationRepository.RebindOutcome.BlockedMissing)
         assertEquals(1, server.requestCount)
         assertEquals(ChatTransportKind.SESSIONS, repo.transport)
@@ -325,7 +324,7 @@ class ConversationTransportMigrationTest {
         val repo = ConversationRepository(store).also { it.open(id) }
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"session":{"id":"s1"}}"""))
         server.enqueue(capabilitiesResponse())
-        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key", true)
+        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key")
         assertTrue(plan is ContinuationPlan.Send && plan.decision is dk.foss.jarvis.hermes.ChatTransportDecision.Sessions)
         assertEquals(originIdentity(baseUrl, "new-key"), store.load(id)!!.origin)
     }
@@ -339,7 +338,7 @@ class ConversationTransportMigrationTest {
         store.save(Conversation(id, "rotation", 1, 1, "s1", listOf(StoredMessage("user", "hi")), ChatTransportKind.SESSIONS, oldOrigin, null))
         val repo = ConversationRepository(store).also { it.open(id) }
         server.enqueue(MockResponse().setResponseCode(401))
-        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key", true)
+        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key")
         assertTrue(plan is ContinuationPlan.Blocked && plan.outcome is ConversationRepository.RebindOutcome.BlockedAuth)
         assertEquals(1, server.requestCount)
         assertEquals(oldOrigin, store.load(id)!!.origin)
@@ -350,7 +349,7 @@ class ConversationTransportMigrationTest {
         server.enqueue(MockResponse().setResponseCode(500))
         val (repo, store) = repositoryWithLegacySessionsOrigin()
         val oldOrigin = repo.origin
-        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key", true)
+        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key")
         assertTrue(plan is ContinuationPlan.Blocked && plan.outcome is ConversationRepository.RebindOutcome.BlockedRetryable)
         assertEquals(1, server.requestCount)
         assertEquals(oldOrigin, store.load(repo.activeConversationId)!!.origin)
@@ -361,7 +360,7 @@ class ConversationTransportMigrationTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         val (repo, store) = repositoryWithLegacySessionsOrigin()
         val oldOrigin = repo.origin
-        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key", true)
+        val plan = resolveContinuation(repo, gateClient(), server.url("/").toString(), "new-key")
         assertTrue(plan is ContinuationPlan.Blocked && plan.outcome is ConversationRepository.RebindOutcome.BlockedRetryable)
         assertEquals(1, server.requestCount)
         assertEquals(oldOrigin, store.load(repo.activeConversationId)!!.origin)
@@ -373,7 +372,7 @@ class ConversationTransportMigrationTest {
         val store = ConversationStore(tmp.newFolder("fresh-${System.nanoTime()}"))
         val repo = ConversationRepository(store).also { it.startNew() }
         val baseUrl = server.url("/").toString().trimEnd('/')
-        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key", false)
+        val plan = resolveContinuation(repo, HermesClient(baseUrl, "new-key"), baseUrl, "new-key")
         assertTrue(plan is ContinuationPlan.Send && plan.decision is dk.foss.jarvis.hermes.ChatTransportDecision.Sessions)
         assertTrue(server.takeRequest().path!!.contains("capabilities"))
         assertEquals(1, server.requestCount)

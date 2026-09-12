@@ -53,7 +53,7 @@ class SessionsMockE2eTest {
         assertTrue(features.session_model_clear && features.model_options && features.chat_completions)
 
         val a = base(originA)
-        assertTrue(ChatTransportSelector.decide(OriginCapabilities(a, CapabilityState.SUPPORTED, features), null, null, a, false) is ChatTransportDecision.Sessions)
+        assertTrue(ChatTransportSelector.decide(OriginCapabilities(a, CapabilityState.SUPPORTED, features), null, null, a) is ChatTransportDecision.Sessions)
 
         originA.enqueue(MockResponse().setResponseCode(200).setBody("""{"object":"hermes.session","session":{"id":"sess_e2e_1","model":null}}"""))
         assertEquals("sess_e2e_1", client().createSession("First conversation").getOrThrow())
@@ -116,7 +116,7 @@ class SessionsMockE2eTest {
                 assertEquals(setOf("message"), Json.parseToJsonElement(body(r)).jsonObject.keys)
             }
         }
-        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b, true) is ChatTransportDecision.Unavailable); assertEquals(0, originB.requestCount)
+        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b) is ChatTransportDecision.Unavailable); assertEquals(0, originB.requestCount)
     }
 
     @Test
