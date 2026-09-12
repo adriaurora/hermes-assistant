@@ -1,39 +1,50 @@
 package dk.foss.jarvis.push
 
+import dk.foss.jarvis.hermes.EventFetchException
 import dk.foss.jarvis.hermes.HermesHttpException
 
 /**
- * Pure policy for FCM revoke outcomes. 404 is idempotent success; 401/403
- * abandon the attempt (credential rejected); every other error keeps the
- * worker alive via exponential back-off.
+ * Pure policy for FCM revoke outcomes.
  *
- * This policy is stateless and testable without Android.
+ * Classification matrix (applied in order):
+ * 1. null → RevokeSuccess (no error)
+ * 2. EventFetchException.rpcCode == "device_not_found" / "device_revoked" → RevokeSuccess
+ * 3. EventFetchException.rpcCode == "device_auth_failed" → CredentialRejected
+ * 4. EventFetchException.statusCode 404 → RevokeSuccess (idempotent)
+ * 5. EventFetchException.statusCode 401/403 → CredentialRejected
+ * 6. HermesHttpException 404 → RevokeSuccess (legacy compat; rare but possible)
+ * 7. HermesHttpException 401/403 → CredentialRejected
+ * 8. Everything else → RetryAgain (transient)
  */
 object FcmRevokePolicy {
 
-    /**
-     * Outcome after a single revoke attempt.
-     *
-      * [RevokeSuccess] — 404 or no error: device already gone or remote DELETE
-      * worked.  The caller must clear registry and pending flag.
-      * [CredentialRejected] — 401/403: the server rejects the pinned credential;
-      * retrying can never succeed. The caller purges local copies and unblocks.
-      * [RetryAgain]    — transient error, keep trying.
-     */
     sealed interface RevokeOutcome {
         object RevokeSuccess : RevokeOutcome
         object CredentialRejected : RevokeOutcome
         object RetryAgain : RevokeOutcome
     }
 
-    /**
-     * Classify a revoke result. 404 → success (idempotent cleanup).
-     * 401/403 → CredentialRejected (abandon). All other errors → keep retrying.
-     */
     fun classify(error: Throwable?): RevokeOutcome = when {
         error == null -> RevokeOutcome.RevokeSuccess
-        error is HermesHttpException && error.statusCode == 404 -> RevokeOutcome.RevokeSuccess
-        error is HermesHttpException && (error.statusCode == 401 || error.statusCode == 403) -> RevokeOutcome.CredentialRejected
+
+        error is EventFetchException -> classifyEventFetch(error)
+
+        error is HermesHttpException -> classifyHttp(error.statusCode)
+
+        else -> RevokeOutcome.RetryAgain
+    }
+
+    private fun classifyEventFetch(e: EventFetchException): RevokeOutcome {
+        val code = e.rpcCode
+        if (code == "device_not_found" || code == "device_revoked") return RevokeOutcome.RevokeSuccess
+        if (code == "device_auth_failed") return RevokeOutcome.CredentialRejected
+        return e.statusCode?.let { classifyHttp(it) }
+            ?: RevokeOutcome.RetryAgain
+    }
+
+    private fun classifyHttp(statusCode: Int): RevokeOutcome = when (statusCode) {
+        404 -> RevokeOutcome.RevokeSuccess
+        401, 403 -> RevokeOutcome.CredentialRejected
         else -> RevokeOutcome.RetryAgain
     }
 }
