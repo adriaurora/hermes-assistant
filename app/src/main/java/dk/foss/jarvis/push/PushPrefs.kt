@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.map
 import dk.foss.jarvis.events.DeliveredEventLog
 
 private val Context.pushDataStore by preferencesDataStore(name = "push_prefs")
-enum class PushProtocol { V1 }
 interface PushState {
     suspend fun isEnabled(): Boolean
     suspend fun disable()
@@ -26,7 +25,7 @@ class PushPrefs constructor(private val store: DataStore<Preferences>) : PushSta
         val ENABLED=booleanPreferencesKey("enabled"); val DISTRIBUTOR=stringPreferencesKey("distributor")
         val REGISTRATION_STATE=stringPreferencesKey("registration_state"); val PENDING_REVOKE=booleanPreferencesKey("pending_revoke")
         val PENDING_CREDENTIAL_CLEAR=booleanPreferencesKey("pending_credential_clear")
-        val PUSH_PROTOCOL=stringPreferencesKey("push_protocol"); val PUSH_TRANSPORT=stringPreferencesKey("push_transport")
+        val PUSH_TRANSPORT=stringPreferencesKey("push_transport")
         val DELIVERED_EVENTS=stringPreferencesKey("delivered_events"); val PUSH_PROBE_RESULT=stringPreferencesKey("push_probe_result"); val PUSH_PROBE_AT=longPreferencesKey("push_probe_at")
     }
     val enabled: Flow<Boolean> = store.data.map { it[Keys.ENABLED] ?: false }
@@ -44,8 +43,6 @@ class PushPrefs constructor(private val store: DataStore<Preferences>) : PushSta
     override suspend fun isPendingRevoke()=pendingRevoke.first()
     override suspend fun setPendingCredentialClear(value:Boolean) { store.edit { it[Keys.PENDING_CREDENTIAL_CLEAR]=value } }
     override suspend fun isPendingCredentialClear()=pendingCredentialClear.first()
-    suspend fun protocol()=PushProtocol.V1
-    suspend fun setProtocol(v:PushProtocol){}
     suspend fun recordDelivered(id:String){store.edit{it[Keys.DELIVERED_EVENTS]=DeliveredEventLog.encode(DeliveredEventLog.append(DeliveredEventLog.decode(it[Keys.DELIVERED_EVENTS]),id))}}
     suspend fun wasDelivered(id:String)=DeliveredEventLog.decode(store.data.first()[Keys.DELIVERED_EVENTS]).contains(id)
     override suspend fun choice()=store.data.first()[Keys.PUSH_TRANSPORT]

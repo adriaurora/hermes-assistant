@@ -112,7 +112,7 @@ object PushIngress {
         suspend fun registerFresh(legacyDeviceId: String? = null): TokenSyncOutcome {
             val label = Build.MODEL.takeIf { it.isNotBlank() } ?: "Android"
             val result = EventRpcClient(settings.baseUrl, settings.apiKey).register(label, token, legacyDeviceId = legacyDeviceId)
-            return result.fold({ r -> if (r.device_secret.isNullOrBlank()) TokenSyncOutcome.PERMANENT else { registry.saveV1(r.device_id, r.device_secret, token, settings.baseUrl, settings.apiKey); prefs.setProtocol(dk.foss.jarvis.push.PushProtocol.V1); schedulePendingSync(context); TokenSyncOutcome.REGISTERED } }, { e ->
+            return result.fold({ r -> if (r.device_secret.isNullOrBlank()) TokenSyncOutcome.PERMANENT else { registry.saveV1(r.device_id, r.device_secret, token, settings.baseUrl, settings.apiKey); schedulePendingSync(context); TokenSyncOutcome.REGISTERED } }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })

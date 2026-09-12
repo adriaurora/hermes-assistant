@@ -7,7 +7,6 @@ import org.junit.Assert.*
  * Verifies that push plugin unavailability is handled correctly:
  * - PushTransport.V1 is the only transport (no LEGACY)
  * - EnrollmentPolicy.decide works with V1-only logic
- * - PushProtocol only has V1
  */
 class PushPluginUnavailableTest {
 
@@ -25,12 +24,6 @@ class PushPluginUnavailableTest {
         } catch (e: ClassNotFoundException) {
             // PushTransport class doesn't exist — also fine
         }
-    }
-
-    @Test
-    fun `PushProtocol only has V1`() {
-        assertEquals(1, PushProtocol.values().size)
-        assertEquals(PushProtocol.V1, PushProtocol.values()[0])
     }
 
     @Test
