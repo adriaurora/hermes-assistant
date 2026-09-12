@@ -14,9 +14,8 @@ Bwarhness/jarvis-assistant. It can replace Gemini as the device assistant:
 There is **no wake word**, no always-on microphone, no third-party voice
 providers. The brain is always Hermes; this app only does ears (STT), mouth
 (TTS), face (Compose UI), and OS integration (assist role). The Hermes coupling
-lives in `hermes/HermesClient.kt` + `hermes/Models.kt` (chat) and, when FCM is
-configured, in `push/` for device registration (V1 RPC `device.register`),
-event fetch/ACK, and push lifecycle management.
+lives in `hermes/HermesClient.kt` + `hermes/Models.kt` (Sessions/Wire) and, when FCM is
+configured, in `hermes/EventClient.kt` (device registration, event fetch/ACK).
 
 Package: `dk.foss.jarvis`. Single Gradle module `:app`. No nav library, no DI
 framework, no companion server.
@@ -55,7 +54,7 @@ Verification = clean compile + tests + the running app on a device.
 
 | Layer | File(s) | Role |
 |---|---|---|
-| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes chat coupling: Sessions API for new conversations, legacy `/v1/chat/completions` for existing ones, and `/v1/models` as connection test. |
+| Wire protocol | `hermes/HermesClient.kt`, `hermes/Models.kt` | Hermes Sessions/Wire coupling for conversations. When FCM is configured, `hermes/EventClient.kt` adds device-registration and event REST endpoints. |
 | Shared HTTP | `net/Http.kt` | `Http.base` (bounded timeouts) + `Http.streaming` (`readTimeout(0)`). Reuse these; never build a new OkHttpClient. |
 | Secrets | `data/SecureStore.kt` | AES-256-GCM key held in `AndroidKeyStore`; encrypted blob in app-private
   SharedPreferences. Interfaces (`AeadCipher`, `SecretBlobStore`) are injectable for JVM tests. |
