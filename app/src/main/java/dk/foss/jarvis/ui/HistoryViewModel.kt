@@ -151,10 +151,9 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
             // Resolve capabilities to pick the right transport — fail-closed on UNKNOWN.
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            val transport = when (caps.state) {
-                CapabilityState.SUPPORTED -> if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
-                CapabilityState.UNSUPPORTED -> ChatTransportKind.LEGACY_CHAT
-                else -> null // UNKNOWN or caps null → fail-closed: no transport, no import
+            val transport = when {
+                caps.state == CapabilityState.SUPPORTED && caps.features.session_chat -> ChatTransportKind.SESSIONS
+                else -> null // UNKNOWN, unsupported, or explicit session_chat=false → fail closed
             }
             if (transport == null) {
                 notice.value = "Server capabilities could not be verified. Session import skipped."

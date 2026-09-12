@@ -187,13 +187,9 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
         val s = settings ?: return
         val client = HermesClient(s.baseUrl, s.apiKey)
-        // Decide transport BEFORE adding the user message so a fresh conversation
-        // sees hasMessages=false and picks Sessions when capabilities are modern.
-        val hasMessages = repo.messages.any { !it.isError }
-
         // Resolve continuity and transport at the repository/transport boundary.
         viewModelScope.launch {
-            when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey, hasMessages)) {
+            when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey)) {
                 is ContinuationPlan.Blocked -> {
                     val message = when (plan.outcome) {
                         is ConversationRepository.RebindOutcome.BlockedAuth -> "Authentication failed while verifying this session."
@@ -212,17 +208,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
-                is ChatTransportDecision.Unavailable -> {
-                    onMain {
-                        error.value = d.reason
-                        goIdle()
-                    }
-                    return@launch
-                }
-                is ChatTransportDecision.Legacy -> {
-                    repo.addMessage("user", userText)
-                    sendLegacy(client, myTurn)
-                }
                 is ChatTransportDecision.Sessions -> {
                     repo.addMessage("user", userText)
                     sendSessions(client, d.features, myTurn, s.baseUrl, s.apiKey)
@@ -230,50 +215,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-    }
-
-    private fun sendLegacy(client: HermesClient, myTurn: Int) {
-        val requestHistory = repo.historyForRequest()
-
-        source = client.streamChat(requestHistory, repo.sessionId, object : HermesClient.StreamCallbacks {
-            override fun onDelta(textDelta: String) = onMain {
-                if (turn == myTurn) onTextDelta(textDelta)
-            }
-
-            override fun onSessionId(id: String) { repo.setSessionId(id) }
-
-            override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
-                if (turn != myTurn) return@onMain
-                toolLabel.value = if (running) (label ?: tool) else null
-            }
-
-            override fun onComplete() = onMain {
-                if (turn != myTurn) return@onMain
-                main.removeCallbacks(idleFlush)
-                main.removeCallbacks(stallIndicator)
-                working.value = false
-                stalled.value = false
-                toolLabel.value = null
-                val rest = sentenceBuffer.toString().trim()
-                sentenceBuffer.setLength(0)
-                if (rest.isNotEmpty()) enqueueSpeech(rest)
-                pendingText.value = ""
-                if (reply.value.isNotBlank()) repo.addMessage("assistant", reply.value)
-                viewModelScope.launch { repo.persist() }
-                streamDone = true
-                pump()
-            }
-
-            override fun onError(message: String) = onMain {
-                if (turn != myTurn) return@onMain
-                main.removeCallbacks(stallIndicator)
-                working.value = false
-                stalled.value = false
-                toolLabel.value = null
-                error.value = message
-                goIdle()
-            }
-        })
     }
 
     private suspend fun sendSessions(client: HermesClient, features: ServerFeatures, myTurn: Int, baseUrl: String, apiKey: String) {

@@ -19,9 +19,7 @@ class StreamClosedBeforeTerminalError : RuntimeException("stream closed before t
 
 /**
  * Talks to a Hermes `api_server`. This is the ONLY coupling to Hermes:
- * OpenAI-compatible `/v1/chat/completions` (streamed via SSE), plus the
- * session-history, model-inventory and connection-test endpoints. Bearer
- * auth; session continuity via X-Hermes-Session-Id.
+ * Session chat, history, model-inventory and capability endpoints. Bearer auth.
  */
 class HermesClient(
     private val baseUrl: String,
@@ -40,82 +38,6 @@ class HermesClient(
         fun onError(error: Throwable) { onError(error.message ?: "Stream failed") }
         fun onFinalContent(text: String) {}
         fun onRuntime(info: RuntimeInfo) {}
-    }
-
-    fun streamChat(
-        messages: List<ChatMessage>,
-        sessionId: String?,
-        cb: StreamCallbacks,
-        model: String? = null,
-    ): EventSource {
-        E2eLog.log("chat transport=LEGACY endpoint=POST /v1/chat/completions model=${model ?: "null"}")
-        val body = HermesJson.encodeToString(
-            ChatRequest.serializer(),
-            ChatRequest(model = model, messages = messages, stream = true),
-        )
-        val builder = Request.Builder()
-            .url("$baseUrl/v1/chat/completions")
-            .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("Accept", "text/event-stream")
-            .post(body.toRequestBody(JSON_MEDIA))
-        if (!sessionId.isNullOrEmpty()) builder.addHeader("X-Hermes-Session-Id", sessionId)
-
-        // The stream signals end twice (the "[DONE]" event AND onClosed) — make sure
-        // the terminal callback fires exactly once.
-        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
-        val sawTerminalEvent = java.util.concurrent.atomic.AtomicBoolean(false)
-
-        val listener = object : EventSourceListener() {
-            override fun onOpen(eventSource: EventSource, response: Response) {
-                response.header("X-Hermes-Session-Id")?.let { cb.onSessionId(it) }
-            }
-
-            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                if (data.isBlank() || data == "[DONE]") {
-                    if (data == "[DONE]") {
-                        sawTerminalEvent.set(true)
-                        if (finished.compareAndSet(false, true)) cb.onComplete()
-                    }
-                    return
-                }
-                if (type == TOOL_PROGRESS_EVENT) {
-                    runCatching { HermesJson.decodeFromString(ToolProgress.serializer(), data) }.getOrNull()
-                        ?.let { p ->
-                            val label = p.label?.takeIf { it.isNotBlank() } ?: p.tool
-                            cb.onToolProgress(p.tool, label, running = p.status.equals("running", ignoreCase = true))
-                        }
-                    return
-                }
-                try {
-                    val chunk = HermesJson.decodeFromString(StreamChunk.serializer(), data)
-                    val delta = chunk.choices.firstOrNull()?.delta?.content
-                    if (!delta.isNullOrEmpty()) cb.onDelta(delta)
-                } catch (_: Exception) {
-                    // keep-alive comment or non-JSON line — ignore
-                }
-            }
-
-            override fun onClosed(eventSource: EventSource) {
-                if (finished.compareAndSet(false, true)) {
-                    if (sawTerminalEvent.get()) cb.onComplete()
-                    else cb.onError(StreamClosedBeforeTerminalError())
-                }
-            }
-
-            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                if (!finished.compareAndSet(false, true)) return
-                val error: Throwable = when {
-                    response != null && !response.isSuccessful -> {
-                        val detail = runCatching { response.body?.string() }.getOrNull()?.take(300)
-                        httpError(response.code, detail.orEmpty(), response.message)
-                    }
-                    t != null -> t
-                    else -> RuntimeException("Connection failed")
-                }
-                cb.onError(error)
-            }
-        }
-        return EventSources.createFactory(Http.streaming).newEventSource(builder.build(), listener)
     }
 
     /** GET /v1/models — returns model ids on success, or a failure with the reason. */

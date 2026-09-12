@@ -1,3 +1,5 @@
+# ⚠️ HISTORICAL: This document describes the legacy device-ID reconciliation process which has been fully removed from the codebase (legacy_reconciled, legacy_device_id, RevokeV1Policy, and legacy enrollment paths deleted). Kept here only for historical reference.
+
 # FCM v1 reconciliation closure
 
 **Date:** 2026-09-06

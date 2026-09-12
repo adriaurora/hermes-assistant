@@ -21,8 +21,8 @@ class OpenServerDecisionTest {
      * Returns the transport to use, or null if fail-closed.
      */
     private fun decideTransport(caps: OriginCapabilities?): ChatTransportKind? = when (caps?.state) {
-        CapabilityState.SUPPORTED -> if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
-        CapabilityState.UNSUPPORTED -> ChatTransportKind.LEGACY_CHAT
+        CapabilityState.SUPPORTED -> if (caps.features.session_chat) ChatTransportKind.SESSIONS else null
+        CapabilityState.UNSUPPORTED -> null
         else -> null // UNKNOWN or caps null → fail-closed
     }
 
@@ -38,21 +38,21 @@ class OpenServerDecisionTest {
     }
 
     @Test
-    fun `SUPPORTED with session_chat false yields LEGACY_CHAT`() {
+    fun `SUPPORTED with session_chat false yields null`() {
         val caps = OriginCapabilities(
             "https://hermes.local",
             CapabilityState.SUPPORTED,
             ServerFeatures(session_chat = false, model_options = true),
         )
         val transport = decideTransport(caps)
-        assertEquals(ChatTransportKind.LEGACY_CHAT, transport)
+        assertNull(transport)
     }
 
     @Test
-    fun `UNSUPPORTED yields LEGACY_CHAT`() {
+    fun `UNSUPPORTED yields null`() {
         val caps = OriginCapabilities("https://hermes.local", CapabilityState.UNSUPPORTED)
         val transport = decideTransport(caps)
-        assertEquals(ChatTransportKind.LEGACY_CHAT, transport)
+        assertNull(transport)
     }
 
     /**
@@ -74,13 +74,13 @@ class OpenServerDecisionTest {
     }
 
     @Test
-    fun `SUPPORTED with only model_options yields LEGACY_CHAT_not_SESSIONS`() {
+    fun `SUPPORTED with only model_options yields null_not_SESSIONS`() {
         val caps = OriginCapabilities(
             "https://hermes.local",
             CapabilityState.SUPPORTED,
             ServerFeatures(model_options = true),
         )
         val transport = decideTransport(caps)
-        assertEquals(ChatTransportKind.LEGACY_CHAT, transport)
+        assertNull(transport)
     }
 }

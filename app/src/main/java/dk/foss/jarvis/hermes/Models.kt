@@ -23,14 +23,6 @@ data class ChatMessage(val role: String, val content: String)
  * model selection (session /model override → session-persisted model →
  * gateway default). Verified against hermes-agent v0.20.4 api_server.
  */
-@Serializable
-data class ChatRequest(
-    val model: String? = null,
-    val messages: List<ChatMessage>,
-    val stream: Boolean = true,
-)
-
-
 /** Shared wire format: unknown fields tolerated, nulls omitted from output. */
 @OptIn(ExperimentalSerializationApi::class)
 val HermesJson: Json = Json {
@@ -40,18 +32,6 @@ val HermesJson: Json = Json {
 }
 
 // --- streaming response (OpenAI chat.completion.chunk) ---
-
-@Serializable
-data class StreamChunk(val choices: List<StreamChoice> = emptyList())
-
-@Serializable
-data class StreamChoice(
-    val delta: Delta = Delta(),
-    val finish_reason: String? = null,
-)
-
-@Serializable
-data class Delta(val role: String? = null, val content: String? = null)
 
 // --- /v1/models (connection test) ---
 

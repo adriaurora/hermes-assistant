@@ -23,7 +23,7 @@ object FcmLifecycle {
      * — that would deadlock.
      *
      * The lock serializes registration HTTP calls ([PushIngress.onFcmToken])
-     * and revoke HTTP calls ([EventClient.revokeDevice]) against enable() and
+     * and revoke HTTP calls ([EventRpcClient.revoke]) against enable() and
      * disable().  A disable() call waits for any in-flight registration HTTP
      * call to complete before flipping state; it then schedules the revoke
      * worker.  The in-flight registration finishes (committing its result)

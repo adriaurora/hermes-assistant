@@ -38,36 +38,11 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 }
                 Result.success()
             }
-            is RegistryState.LegacyPending -> {
-                if (prefs.isPendingCredentialClear()) {
-                    registry.clear()
-                    secure.clearToken()
-                    prefs.setPendingCredentialClear(false)
-                }
-                prefs.setPendingRevoke(false)
-                if (prefs.isEnabled()) {
-                    FcmTokenRegistration.enqueueCurrent(app)
-                    prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
-                } else {
-                    prefs.setRegistrationState(FcmRegistrationState.DISABLED)
-                }
-                Result.success()
-            }
             is RegistryState.Registered -> {
                 val r = state.registration
-                val o = if (prefs.protocol() == PushProtocol.V1) {
-                    if (r.deviceSecret.isNullOrBlank()) {
-                        FcmRevokePolicy.RevokeOutcome.RevokeSuccess
-                    } else {
-                        RevokeV1Policy.classify(
-                            EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
-                        )
-                    }
-                } else {
-                    FcmRevokePolicy.classify(
-                        EventClient(r.hermesOrigin, r.apiKey, r.deviceId).revokeDevice().exceptionOrNull()
-                    )
-                }
+                val o = FcmRevokePolicy.classify(
+                    EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
+                )
                 when (o) {
                     FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.RevokeOutcome.CredentialRejected -> {
                         FcmRevokeCleanup.onComplete(registry, secure, prefs) {
