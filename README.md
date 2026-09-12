@@ -6,11 +6,11 @@ It replaces the device's default digital assistant (long-press the power
 button) and gives you streaming voice conversations plus normal chat — all
 powered by *your* Hermes instance. No wake word, no always-on microphone.
 
-The app talks to **one thing only: your Hermes `api_server`**. Chat uses the
-Sessions API for new conversations and retains the OpenAI-compatible
-`/v1/chat/completions` transport for existing conversations. When FCM is configured it also calls the
-Hermes device-event REST APIs (`/api/devices/*`, `/api/events/*`). No companion
-server, no sidecar — point it at your Hermes URL + API key and go.
+The app talks to **one thing only: your Hermes `api_server`**. Chat and voice use
+the Sessions API; each conversation is backed by a server-side Hermes session.
+When push is enabled, the optional `hermes_assistant` plugin provides the Wire
+Protocol event endpoint. No companion server, no sidecar — point it at your
+Hermes URL + API key and go.
 
 ## Features
 
@@ -24,11 +24,9 @@ server, no sidecar — point it at your Hermes URL + API key and go.
 - 🔔 **FCM event notifications** — Hermes sends a data-only wake with an opaque `event_id`;
   the app fetches content over the authenticated Hermes API and posts a native
   notification. Push sees only an opaque event ID, never reminder or conversation text.
-  Supports the plugin [Wire Protocol v1](docs/wire-protocol-v1/) (RPC endpoint
-  `POST /api/platforms/hermes_assistant/events`) with automatic fallback to the
-  legacy REST paths when the plugin is absent. See
-  [docs/wire-protocol-v1/](docs/wire-protocol-v1/) and
-  [docs/fcm-v1-reconciliation/](docs/fcm-v1-reconciliation/).
+  Uses the optional [Wire Protocol v1](docs/wire-protocol-v1/) `hermes_assistant`
+  plugin (RPC endpoint `POST /api/platforms/hermes_assistant/events`). See
+  [FCM setup](docs/fcm-setup.md) for installation and verification.
 
 The **brain is always Hermes** — the app only handles the ears, mouth, face, and
 OS integration.
@@ -79,9 +77,10 @@ The supported FCM layout is to provide both files (or a root
 do not provide only one variant file, because the Google Services plugin can then
 fail the other variant at configuration time. For chat-only builds, remove all
 three possible config locations so the plugin is not applied.
-Hermes must expose the device-registration and event REST endpoints
-(`/api/devices/*`, `/api/events/*`) for notifications to work.
-`Clear saved key` in Settings also revokes the device registration on your Hermes instance and disables event notifications until push is re-enabled; the revoke retries in the background and treats a 404 as already-revoked.
+The optional `hermes_assistant` plugin must be installed and enabled on Hermes
+for notifications to work. `Clear saved key` in Settings also revokes the
+plugin device registration on your Hermes instance and disables event
+notifications until push is re-enabled. See [FCM setup](docs/fcm-setup.md).
 
 ### Signed release
 
@@ -90,25 +89,30 @@ Debug builds are fine for sideloading. For a release build, add a
 
 ## Architecture
 
-### Chat transports
+### Chat and voice sessions
 
-New conversations use the capability-gated Sessions API; existing conversations
-retain legacy `/v1/chat/completions`. See [Sessions API chat migration](docs/sessions-api-chat.md)
-for the transport, session, and model-selection rules.
+Every new chat or voice conversation uses the capability-gated Sessions API.
+The app creates a Hermes session lazily, binds the local conversation to the
+server session ID, sends only each new turn, and resumes that session after a
+restart. Voice is the same Sessions API conversation with Android STT/TTS; it
+does not use a separate voice backend or chat transport. A server that does not
+advertise Sessions chat is surfaced as unsupported rather than silently
+switching transports. See [Sessions API chat](docs/sessions-api-chat.md) for
+the session, streaming, and model-selection contract.
 
 | Layer | What |
 |---|---|
-| `hermes/HermesClient` | Sessions API SSE for new conversations and legacy `/v1/chat/completions` for existing ones. |
+| `hermes/HermesClient` | Sessions API (`/api/sessions/*`) for chat and voice, with SSE streaming when advertised. |
 | `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private
   SharedPreferences. |
 | `voice/SpeechInput` | STT via Android `SpeechRecognizer` (on-device where available). |
 | `voice/TtsEngine` | Android's built-in offline TTS. |
 | `ui/ConversationViewModel` | The listen → think → speak → listen loop. |
 | `assist/*` | `VoiceInteractionService` so the app can be the default assistant. |
-| `push/FcmMessagingService` | FCM data-only wake → WorkManager worker (event ID only in push). |
-| `hermes/EventClient` | Authenticated REST: device registration, event fetch/ACK, pending sync. |
+| `push/FcmMessagingService` | Optional FCM data-only wake → WorkManager worker (event ID only in push). |
+| `hermes/EventRpc` | Optional plugin Wire Protocol v1: device registration, event fetch/ACK, and pending sync. |
 
-`HermesClient` and `EventClient` are both deliberately coupled to the Hermes API;
+`HermesClient` and `EventRpc` are both deliberately coupled to the Hermes API;
 there is no separate companion or proxy service.
 
 Stack: Kotlin + Jetpack Compose, minSdk 29 / target 34.
@@ -119,8 +123,8 @@ Stack: Kotlin + Jetpack Compose, minSdk 29 / target 34.
   uses the on-device recognizer when available).
 - Release builds deny cleartext HTTP — point them at an HTTPS endpoint or a
   private route; debug builds allow plain LAN HTTP for development.
-- FCM notifications require a Firebase config matching the app's applicationId and
-  the Hermes backend must expose the device-event REST endpoints.
+- FCM notifications require matching Firebase config and the optional
+  `hermes_assistant` plugin; see [FCM setup](docs/fcm-setup.md).
 - Tapping a notification opens the ordinary main screen; `MainActivity` deliberately
   ignores notification extras and does not deep-link to or auto-start a conversation.
 
