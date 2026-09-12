@@ -127,6 +127,20 @@ class SessionFirstTurnTest {
         assertEquals("sid-2", createSessionForFirstTurn(client(), "same", "abcdefghijk").getOrThrow())
         val a = server.takeRequest(); val b = server.takeRequest()
         assertEquals("same", title(a)); assertTrue(title(b).startsWith("same · ")); assertEquals(2, seen.size)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `invalidTitle400_retriesWithSuffix_then201`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400)
+            .setBody("{\"error\":{\"code\":\"invalid_title\",\"message\":\"Title already in use by session X\"}}"))
+        server.enqueue(response("sid-201"))
+
+        val result = createSessionForFirstTurn(client(), "same", "abcdefghijk")
+
+        assertEquals("sid-201", result.getOrThrow())
+        assertEquals(2, server.requestCount)
+        assertEquals("same", title(server.takeRequest()))
+        assertEquals("same · abcdefgh", title(server.takeRequest()))
     }
 
     @Test fun `consecutive same titles get distinct ids`() = runBlocking {
@@ -145,7 +159,9 @@ class SessionFirstTurnTest {
     @Test fun `400 with different rpc code is not retried`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(400)
             .setBody("{\"error\":{\"code\":\"invalid_request\",\"message\":\"bad title\"}}"))
-        assertTrue(createSessionForFirstTurn(client(), "x", "id").isFailure)
+        val result = createSessionForFirstTurn(client(), "x", "id")
+        assertTrue(result.isFailure)
+        assertEquals("invalid_request", (result.exceptionOrNull() as HermesHttpError).rpcCode)
         assertEquals(1, server.requestCount)
     }
 
