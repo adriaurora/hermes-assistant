@@ -1,6 +1,6 @@
-# Sessions API chat (historical)
+# Sessions API chat (archival — not operational)
 
-> **HISTORICAL — NOT OPERATIONAL.** This records an earlier migration design. The Android client supports Sessions API chat only; do not use this as guidance for older endpoints.
+> **ARCHIVAL — NOT OPERATIONAL.** This file is retained only as historical context for an earlier migration design. It is not a current contract, must not be used to implement or operate the client, and must not be used as guidance for older endpoints.
 
 **Status:** HISTORICAL
 

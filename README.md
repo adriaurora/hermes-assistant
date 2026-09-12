@@ -97,8 +97,8 @@ server session ID, sends only each new turn, and resumes that session after a
 restart. Voice is the same Sessions API conversation with Android STT/TTS; it
 does not use a separate voice backend or chat transport. A server that does not
 advertise Sessions chat is surfaced as unsupported rather than silently
-switching transports. See [Sessions API chat](docs/sessions-api-chat.md) for
-the session, streaming, and model-selection contract.
+switching transports. The former [Sessions API chat design](docs/sessions-api-chat.md)
+is archival documentation, not the current operational contract.
 
 | Layer | What |
 |---|---|
