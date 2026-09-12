@@ -280,36 +280,30 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         val userText = repo.messages.lastOrNull { it.role == "user" && !it.isError }?.text ?: ""
         val origin = originIdentity(baseUrl, apiKey)
         if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
-
-        // If no server session yet, create one first
-        if (repo.sessionId.isNullOrEmpty()) {
-            val titleForSession = sessionTitleFrom(repo.lastUserTurnText())
-            val createResult = createSessionForFirstTurn(client, titleForSession, repo.activeConversationId)
-            createResult.fold(
-                onSuccess = { sid ->
-                    if (turn != myTurn) return@fold
-                    repo.bindSession(origin, sid, ChatTransportKind.SESSIONS)
-                    // Send the turn on the new session
-                    if (features.session_chat_streaming) {
-                        startSessionStreaming(client, repo.sessionId!!, userText, myTurn)
-                    } else {
-                        sendSessionTurnNonStreaming(client, repo.sessionId!!, userText, myTurn)
-                    }
-                },
-                onFailure = {
-                    if (turn != myTurn) return@fold
-                    onMain {
-                        error.value = "Couldn't start a Hermes session: ${it.message?.take(120)}"
-                        repo.persistAsync()
-                        goIdle()
-                    }
+        val outcome = startSessionTurn(
+            repo, client, origin, sessionTitleFrom(repo.lastUserTurnText()),
+            repo.activeConversationId, repo.pendingModelIntent,
+        )
+        if (turn != myTurn) return
+        when (outcome) {
+            is SessionTurnStartOutcome.CreateFailed -> {
+                onMain {
+                    error.value = "Couldn't start a Hermes session: ${outcome.error.message?.take(120)}"
+                    repo.persistAsync()
+                    goIdle()
                 }
-            )
-            // If create failed or turn changed, don't proceed
-            return
+                return
+            }
+            is SessionTurnStartOutcome.LockFailed -> {
+                onMain {
+                    error.value = "Couldn't pin model to session: ${outcome.error.message?.take(120)}"
+                    repo.persistAsync()
+                    goIdle()
+                }
+                return
+            }
+            is SessionTurnStartOutcome.Started -> Unit
         }
-
-        // Session already exists — send the turn directly
         if (features.session_chat_streaming) {
             startSessionStreaming(client, repo.sessionId!!, userText, myTurn)
         } else {

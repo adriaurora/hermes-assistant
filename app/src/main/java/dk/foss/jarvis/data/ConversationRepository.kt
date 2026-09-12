@@ -22,6 +22,13 @@ import dk.foss.jarvis.net.E2eLog
  */
 class ConversationRepository internal constructor(private val store: ConversationStore) {
 
+    /** In-memory only: the next model operation which must be acknowledged. */
+    @Volatile var pendingModelIntent: PendingModelIntent? = null
+    fun consumePendingModelIntent() { pendingModelIntent = null }
+    fun consumePendingModelIntent(expected: PendingModelIntent) {
+        if (pendingModelIntent == expected) pendingModelIntent = null
+    }
+
     sealed class RebindOutcome {
         object VerifiedRebound : RebindOutcome()
         object NotNeeded : RebindOutcome()
@@ -67,6 +74,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         title = ""
         createdAt = System.currentTimeMillis()
         dirty = false
+        pendingModelIntent = null
         switched()
     }
 
@@ -81,6 +89,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
         E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} msgs=${c.messages.size}")
         dirty = false
+        pendingModelIntent = null
         switched()
     }
 

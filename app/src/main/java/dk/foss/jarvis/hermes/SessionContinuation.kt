@@ -1,6 +1,7 @@
 package dk.foss.jarvis.hermes
 
 import dk.foss.jarvis.data.ConversationRepository
+import dk.foss.jarvis.data.PendingModelIntent
 import dk.foss.jarvis.net.E2eLog
 
 sealed class SessionTurnStartOutcome {
@@ -17,23 +18,37 @@ suspend fun startSessionTurn(
     origin: String,
     title: String,
     uniqueSuffix: String,
-    option: String?,
+    intent: PendingModelIntent?,
 ): SessionTurnStartOutcome {
-    val sid = repo.sessionId ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
+    val wasExisting = !repo.sessionId.isNullOrEmpty()
+    val sid = repo.sessionId?.takeIf { it.isNotEmpty() }
+        ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
         return SessionTurnStartOutcome.CreateFailed(it)
     }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
     var runtime: RuntimeInfo? = null
-    if (option != null) {
-        val result = client.setSessionModel(sid, option)
+    E2eLog.log("model intent=${intentLogName(intent)}")
+    if (intent != null && !(intent is PendingModelIntent.Clear && !wasExisting)) {
+        val result = when (intent) {
+            is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
+            PendingModelIntent.Clear -> client.clearSessionModel(sid)
+        }
         if (result.isFailure) {
             val error = result.exceptionOrNull()!!
             val h = error as? HermesHttpError
-            E2eLog.log("model lock failed sid=$sid${h?.let { " code=${it.code}" } ?: ""}")
+            E2eLog.log("model intent=${intentLogName(intent)} ack=fail sid=$sid${h?.let { " code=${it.code}" } ?: ""}")
             return SessionTurnStartOutcome.LockFailed(sid, error)
         }
         runtime = result.getOrNull()?.runtime
+        E2eLog.log("model intent=${intentLogName(intent)} ack=ok")
     }
+    if (intent != null) repo.consumePendingModelIntent(intent)
     return SessionTurnStartOutcome.Started(sid, runtime)
+}
+
+private fun intentLogName(intent: PendingModelIntent?): String = when (intent) {
+    null -> "none"
+    is PendingModelIntent.Set -> "Set(model)"
+    PendingModelIntent.Clear -> "Clear"
 }
 
 

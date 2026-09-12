@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dk.foss.jarvis.data.ConversationRepository
+import dk.foss.jarvis.data.PendingModelIntent
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.*
 import kotlinx.coroutines.CoroutineScope
@@ -48,11 +49,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val modelPickerOpen = mutableStateOf(false)
     val modelLoading = mutableStateOf(false)
     val modelError = mutableStateOf<String?>(null)
-
-    /** Model requested while no server session existed yet; applied on first session id. */
-    var pendingOption: ModelOption? = null
-
-    private val unsubscribeSwitched = repo.onConversationSwitched { pendingOption = null }
 
     private var currentSource: EventSource? = null
     private var activeTurnJob: kotlinx.coroutines.Job? = null
@@ -132,35 +128,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) { modelError.value = "Configure Hermes in Settings first"; return@launch }
 
-            // Reflect the choice optimistically; the server confirms below.
+            // Gates must not leave a stale intent behind. A real choice is queued
+            // before verification (so a blocked verification can be retried).
             val chosenLabel = option?.label ?: "Automatic"
+            val intent = option?.let { PendingModelIntent.Set(it.modelId, it.label) } ?: PendingModelIntent.Clear
+            val previousIntent = repo.pendingModelIntent
+            repo.pendingModelIntent = intent
             modelLabel.value = chosenLabel
             modelPickerOpen.value = false
 
-            if (sid.isNullOrEmpty()) {
-                // No server session yet — remember the intent.
-                // Incondicional: elegir Automatic (option == null) LIMPIA la pendiente,
-                // y elegir un modelo específico la establece.
-                pendingOption = option
-                return@launch
-            }
-
             val client = HermesClient(s.baseUrl, s.apiKey)
-            val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
-            E2eLog.log("chooseModel gate=${gate::class.simpleName}")
-            when (gate) {
-                is ConversationRepository.RebindOutcome.BlockedAuth -> { modelError.value = "Authentication failed while verifying this session."; return@launch }
-                is ConversationRepository.RebindOutcome.BlockedMissing -> { modelError.value = "This session no longer exists."; return@launch }
-                is ConversationRepository.RebindOutcome.BlockedRetryable -> { modelError.value = "Couldn't verify this session; try again."; return@launch }
-                else -> Unit
+            if (!sid.isNullOrEmpty()) {
+                val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
+                E2eLog.log("chooseModel gate=${gate::class.simpleName}")
+                when (gate) {
+                    is ConversationRepository.RebindOutcome.BlockedAuth -> { modelLabel.value = modelSelection.state.label; modelError.value = "Authentication failed while verifying this session."; return@launch }
+                    is ConversationRepository.RebindOutcome.BlockedMissing -> { modelLabel.value = modelSelection.state.label; modelError.value = "This session no longer exists."; return@launch }
+                    is ConversationRepository.RebindOutcome.BlockedRetryable -> { modelLabel.value = modelSelection.state.label; modelError.value = "Couldn't verify this session; try again."; return@launch }
+                    else -> Unit
+                }
             }
 
             // Check selector availability first
             if (!modelSelection.state.selectorAvailable) {
+                repo.pendingModelIntent = previousIntent
                 modelError.value = "Model selection is not supported by this server."
                 modelLabel.value = modelSelection.state.label
                 return@launch
             }
+
+            // No server session yet — the repository remembers the intent.
+            if (sid.isNullOrEmpty()) return@launch
 
             val result = if (option == null) client.clearSessionModel(sid)
             else client.setSessionModel(sid, option.modelId)
@@ -177,6 +175,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         modelLabel.value = chosenLabel
                     }
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
+                    repo.consumePendingModelIntent(intent)
                     modelPickerOpen.value = false
                 },
                 onFailure = {
@@ -192,16 +191,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Called from streamChat's onSessionId once the real server session id is known. */
     fun onSessionCaptured(sessionId: String) {
-        val pending = pendingOption ?: return
-        pendingOption = null
-        modelLabel.value = pending.label
+        val pending = repo.pendingModelIntent ?: return
+        if (pending is PendingModelIntent.Set) modelLabel.value = pending.label
         viewModelScope.launch {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) return@launch
             val client = HermesClient(s.baseUrl, s.apiKey)
-            client.setSessionModel(sessionId, pending.modelId).fold(
+            val result = when (pending) {
+                is PendingModelIntent.Set -> client.setSessionModel(sessionId, pending.modelId)
+                PendingModelIntent.Clear -> client.clearSessionModel(sessionId)
+            }
+            result.fold(
                 onSuccess = {
-                    modelLabel.value = pending.label
+                    when (pending) {
+                        is PendingModelIntent.Set -> {
+                            modelLabel.value = pending.label
+                            modelSelection.onSetAck(pending.label, it.runtime)
+                        }
+                        PendingModelIntent.Clear -> {
+                            modelLabel.value = "Automatic"
+                            modelSelection.onClearAck(it.runtime)
+                        }
+                    }
+                    repo.consumePendingModelIntent(pending)
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
                 },
                 onFailure = {
@@ -263,7 +275,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         effectiveRoute.value = null
         sendBlocked.value = null
         transportNotice.value = null
-        pendingOption = null
     }
 
     fun cancel() {
@@ -378,10 +389,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val origin = originIdentity(s.baseUrl, s.apiKey)
         if (repo.transport != ChatTransportKind.SESSIONS) repo.bindTransport(origin, ChatTransportKind.SESSIONS)
         val queuedText = repo.queueFirstTurn(userText)
-        val pending = pendingOption
+        val pending = repo.pendingModelIntent
         when (val outcome = startSessionTurn(
             repo, client, origin, sessionTitleFrom(queuedText), repo.activeConversationId,
-            pending?.modelId,
+            pending,
         )) {
             is SessionTurnStartOutcome.CreateFailed -> {
                 appendSystemError("Couldn't start a Hermes session: ${outcome.error.message?.take(120) ?: "unknown"}")
@@ -397,10 +408,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
             is SessionTurnStartOutcome.Started -> if (pending != null) {
-                // Consume only after the lock ACK; a retry must issue the lock again.
-                pendingOption = null
-                modelSelection.onSetAck(pending.label, outcome.runtime)
-                modelLabel.value = pending.label
+                when (pending) {
+                    is PendingModelIntent.Set -> {
+                        modelSelection.onSetAck(pending.label, outcome.runtime)
+                        modelLabel.value = pending.label
+                    }
+                    PendingModelIntent.Clear -> {
+                        modelSelection.onClearAck(outcome.runtime)
+                        modelLabel.value = "Automatic"
+                    }
+                }
                 outcome.runtime?.let { effectiveRoute.value = EffectiveRoute.fromRuntime(it) }
             }
         }
@@ -532,7 +549,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         cancel()
-        unsubscribeSwitched()
         uiScope.cancel()
         repo.persistAsync()
         super.onCleared()
