@@ -77,6 +77,7 @@ suspend fun resolveContinuation(
             val caps = CapabilityRegistry.capabilities(currentOrigin) { client.getCapabilities() }
             val decision = ChatTransportSelector.decide(
                 caps, repo.transport, repo.origin, currentOrigin,
+                hasMessages = repo.messages.any { !it.isError },
             )
             E2eLog.log("continuation caps=${caps.state} gate=${gateName(gate)} decision=${decision::class.simpleName}")
             ContinuationPlan.Send(decision)

@@ -1,13 +1,14 @@
-# Sessions API chat migration
+# Sessions API chat (historical)
 
-**Status:** IMPLEMENTED
+> **HISTORICAL — NOT OPERATIONAL.** This records an earlier migration design. The Android client supports Sessions API chat only; do not use this as guidance for older endpoints.
+
+**Status:** HISTORICAL
 
 ## 1. Overview
 
 The chat architecture is: Android conversation → persistent Hermes session →
 Sessions API streaming → capability-driven model selector → Automatic ↔ explicit
-model, with the legacy chat transport retained as a fallback for existing
-conversations.
+model, Sessions API chat as the sole supported conversation transport.
 
 ## 2. Capability negotiation
 
@@ -18,8 +19,8 @@ decodes `CapabilitiesEnvelope` into `ServerFeatures`. The relevant flags are
 
 `CapabilityRegistry` caches `OriginCapabilities` by normalized origin. A
 successful response is `SUPPORTED`; HTTP 404 or 405 means `UNSUPPORTED`, which
-is cached and permits legacy chat. HTTP 401/403, 5xx, network failures, and
-timeouts mean `UNKNOWN`: they are never cached, never downgrade to legacy, and
+is cached and blocks continuation. HTTP 401/403, 5xx, network failures, and
+timeouts mean `UNKNOWN`: they are never cached, never downgrade to an older transport, and
 block sends with a retry message instead. Modern endpoints are used only when
 `session_chat` is true. Streaming is preferred when `session_chat_streaming` is
 true. The model selector requires both `model_options` and
@@ -34,7 +35,7 @@ SHA-256 fingerprint of the API key), `sessionId`, and `lastUsedAt`. Older
 `scheme://host:port` origins are retained as legacy data and are never claimed
 locally; a Sessions conversation is rebound only after an authenticated GET of
 its session succeeds.
-`ChatTransportKind` is either `LEGACY_CHAT` or `SESSIONS`. A session created on
+`ChatTransportKind` contains only `SESSIONS`. A session created on
 origin A is never sent to origin B; origin isolation is enforced by
 `ChatTransportSelector`.
 
@@ -51,7 +52,7 @@ conversations never mix transports. A brand-new conversation commits to `SESSION
 when capabilities allow it; if create-session fails, it remains `SESSIONS`-bound
 with no server session and the unsent user turn is retained locally. It is
 submitted only by an explicit user retry, and then exactly one turn is sent.
-There is no orphan server session and no downgrade to legacy.
+There is no orphan server session and no downgrade to an older transport.
 
 ## 5. Session lifecycle
 

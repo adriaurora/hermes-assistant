@@ -15,7 +15,6 @@ class TransportSelectionTest {
 
     private fun isSessions(d: ChatTransportDecision): Boolean = d is ChatTransportDecision.Sessions
     private fun isBlocked(d: ChatTransportDecision): Boolean = d is ChatTransportDecision.Blocked
-    private fun isUnavailable(d: ChatTransportDecision): Boolean = d is ChatTransportDecision.Unavailable
 
     // 1. undecided(null) + SUPPORTED(session_chat=true) → Sessions with features
     @Test
@@ -62,15 +61,7 @@ class TransportSelectionTest {
         assertTrue(isSessions(d))
     }
 
-    // 5. LEGACY_CHAT marker + SUPPORTED modern caps → Unavailable (legacy chat not supported)
-    @Test
-    fun `legacy marker with supported caps yields Unavailable`() {
-        val features = OriginCapabilities("https://h:1", CapabilityState.SUPPORTED, ServerFeatures(session_chat = true))
-        val d = decide(features, ChatTransportKind.LEGACY_CHAT, null, "https://h:1")
-        assertTrue(isUnavailable(d))
-    }
-
-    // 6. SESSIONS marker + convOrigin==currentOrigin + SUPPORTED caps → Sessions
+    // 5. SESSIONS marker + convOrigin==currentOrigin + SUPPORTED caps → Sessions
     @Test
     fun `sessions marker same origin supported yields Sessions`() {
         val features = OriginCapabilities("https://h:1", CapabilityState.SUPPORTED, ServerFeatures(session_chat = true))
@@ -91,7 +82,7 @@ class TransportSelectionTest {
     fun `sessions marker different origin yields Unavailable`() {
         val features = OriginCapabilities("https://h:1", CapabilityState.SUPPORTED, ServerFeatures(session_chat = true))
         val d = decide(features, ChatTransportKind.SESSIONS, "https://other:1", "https://h:1")
-        assertTrue(isUnavailable(d))
+        assertTrue(isBlocked(d))
     }
 
     // 8. SUPPORTED but session_chat=false + undecided → Blocked
@@ -109,14 +100,7 @@ class TransportSelectionTest {
         assertTrue(isBlocked(d))
     }
 
-    // 10. LEGACY marker → Unavailable
-    @Test
-    fun `legacy marker yields Unavailable`() {
-        val d = decide(null, ChatTransportKind.LEGACY_CHAT, null, "https://h:1")
-        assertTrue(isUnavailable(d))
-    }
-
-    // 11. UNSUPPORTED with messages → Blocked (not Legacy)
+    // 9. UNSUPPORTED with messages → Blocked (not Legacy)
     @Test
     fun `undecided has messages unsupported yields Blocked`() {
         val features = OriginCapabilities("https://h:1", CapabilityState.UNSUPPORTED)

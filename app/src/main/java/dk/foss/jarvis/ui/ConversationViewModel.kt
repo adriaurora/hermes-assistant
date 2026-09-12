@@ -208,13 +208,6 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
-                is ChatTransportDecision.Unavailable -> {
-                    onMain {
-                        error.value = d.reason
-                        goIdle()
-                    }
-                    return@launch
-                }
                 is ChatTransportDecision.Sessions -> {
                     repo.addMessage("user", userText)
                     sendSessions(client, d.features, myTurn, s.baseUrl, s.apiKey)

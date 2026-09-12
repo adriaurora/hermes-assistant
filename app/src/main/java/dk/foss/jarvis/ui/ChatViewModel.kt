@@ -317,11 +317,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         appendSystemError(d.reason)
                         return@launch
                     }
-                    is ChatTransportDecision.Unavailable -> {
-                        sendBlocked.value = d.reason
-                        appendSystemError(d.reason)
-                        return@launch
-                    }
                      is ChatTransportDecision.Sessions -> sendSessions(client, d.features, text)
                     }
                 }

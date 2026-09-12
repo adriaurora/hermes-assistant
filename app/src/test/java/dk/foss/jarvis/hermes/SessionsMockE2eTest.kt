@@ -116,7 +116,7 @@ class SessionsMockE2eTest {
                 assertEquals(setOf("message"), Json.parseToJsonElement(body(r)).jsonObject.keys)
             }
         }
-        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b) is ChatTransportDecision.Unavailable); assertEquals(0, originB.requestCount)
+        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b) is ChatTransportDecision.Blocked); assertEquals(0, originB.requestCount)
     }
 
     @Test
