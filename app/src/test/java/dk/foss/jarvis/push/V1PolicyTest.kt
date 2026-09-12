@@ -10,28 +10,22 @@ class V1PolicyTest {
     // ── EnrollmentPolicy ──────────────────────────────────────────────────
 
     @Test
-    fun `LEGACY transport always returns None regardless of registration and secret`() {
-        assertEquals(EnrollmentAction.None, EnrollmentPolicy.decide(PushTransport.LEGACY, true, true))
-        assertEquals(EnrollmentAction.None, EnrollmentPolicy.decide(PushTransport.LEGACY, false, false))
-    }
-
-    @Test
-    fun `V1 no registration returns RegisterFresh with legacyRevokeFirst=false`() {
-        val action = EnrollmentPolicy.decide(PushTransport.V1, false, false)
+    fun `no registration returns RegisterFresh with legacyRevokeFirst=false`() {
+        val action = EnrollmentPolicy.decide(false, false)
         assertEquals(EnrollmentAction.RegisterFresh::class, action::class)
         if (action is EnrollmentAction.RegisterFresh) assertEquals(false, action.legacyRevokeFirst)
     }
 
     @Test
-    fun `V1 has registration no secret returns RegisterFresh with legacyRevokeFirst=true`() {
-        val action = EnrollmentPolicy.decide(PushTransport.V1, true, false)
+    fun `has registration no secret returns RegisterFresh with legacyRevokeFirst=true`() {
+        val action = EnrollmentPolicy.decide(true, false)
         assertEquals(EnrollmentAction.RegisterFresh::class, action::class)
         if (action is EnrollmentAction.RegisterFresh) assertEquals(true, action.legacyRevokeFirst)
     }
 
     @Test
-    fun `V1 has registration and secret returns UpdateToken`() {
-        assertEquals(EnrollmentAction.UpdateToken, EnrollmentPolicy.decide(PushTransport.V1, true, true))
+    fun `has registration and secret returns UpdateToken`() {
+        assertEquals(EnrollmentAction.UpdateToken, EnrollmentPolicy.decide(true, true))
     }
 
     // ── RevokeV1Policy ────────────────────────────────────────────────────

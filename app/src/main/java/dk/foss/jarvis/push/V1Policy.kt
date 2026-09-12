@@ -10,8 +10,7 @@ sealed interface EnrollmentAction {
     data object UpdateToken : EnrollmentAction
 }
 object EnrollmentPolicy {
-    fun decide(transport: PushTransport, hasRegistration: Boolean, hasSecret: Boolean): EnrollmentAction = when {
-        transport == PushTransport.LEGACY -> EnrollmentAction.None
+    fun decide(hasRegistration: Boolean, hasSecret: Boolean): EnrollmentAction = when {
         !hasRegistration -> EnrollmentAction.RegisterFresh(false)
         !hasSecret -> EnrollmentAction.RegisterFresh(true)
         else -> EnrollmentAction.UpdateToken

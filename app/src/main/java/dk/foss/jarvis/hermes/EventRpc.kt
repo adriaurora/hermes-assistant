@@ -17,6 +17,24 @@ import java.io.IOException
 const val RPC_PROTOCOL_VERSION = 1
 const val RPC_PATH = "api/platforms/hermes_assistant/events"
 
+/** Minimal API for durable event operations (fetch, ack, pending). Implemented by [EventRpcClient]. */
+interface EventApi {
+    suspend fun fetchEvent(id: String): Result<HermesEvent>
+    suspend fun ack(id: String): Result<Unit>
+    suspend fun pending(): Result<HermesEventsPage>
+}
+
+enum class FetchFailureKind { HTTP, SERIALIZATION, NETWORK, OTHER }
+
+class EventFetchException(
+    val kind: FetchFailureKind,
+    val statusCode: Int? = null,
+    cause: Throwable? = null,
+    val rpcCode: String? = null,
+) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}${rpcCode?.let { " [$it]" }.orEmpty()}", cause)
+
+class HermesHttpException(val statusCode: Int, cause: Throwable? = null) : IOException("HTTP $statusCode", cause)
+
 @Serializable
 data class RpcErrorBody(val code: String, val message: String? = null, @kotlinx.serialization.SerialName("http_status") val httpStatus: Int? = null)
 
