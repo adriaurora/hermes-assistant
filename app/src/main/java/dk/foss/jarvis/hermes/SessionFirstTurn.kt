@@ -11,7 +11,7 @@ suspend fun createSessionForFirstTurn(client: HermesClient, baseTitle: String, u
     val first = client.createSession(baseTitle)
     if (first.isSuccess) return first
     val error = first.exceptionOrNull() as? HermesHttpError
-    // Confirmed title collisions use session_exists or invalid_title; without an RPC code, 409 is the legacy heuristic.
+    // Confirmed title collisions use session_exists or invalid_title; without an RPC code, HTTP 409 is treated as a collision.
     val isTitleCollision = when {
         error?.rpcCode == "session_exists" -> true
         error?.rpcCode == "invalid_title" -> true

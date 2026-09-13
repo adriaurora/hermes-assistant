@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import dk.foss.jarvis.net.E2eLog
 
 /** Chat transport generation marker. Deliberately unrelated to the push PushProtocol enum and to FCM/device identity. */
-enum class ChatTransportKind { LEGACY_CHAT, SESSIONS }
+enum class ChatTransportKind { SESSIONS }
 
 @Serializable data class SessionTurnRequest(val message: String)
 @Serializable data class SessionCreateRequest(val title: String)
@@ -45,27 +45,29 @@ private val JsonPrimitive.contentOrNull get() = runCatching { content }.getOrNul
 /** Decision returned by [ChatTransportSelector.decide] about which chat transport to use. */
 sealed class ChatTransportDecision {
     data class Sessions(val features: ServerFeatures) : ChatTransportDecision()
-    object Legacy : ChatTransportDecision()
     data class Blocked(val reason: String) : ChatTransportDecision()
-    data class Unavailable(val reason: String) : ChatTransportDecision()
 }
 
 object ChatTransportSelector {
-    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean): ChatTransportDecision {
+    fun decide(features: OriginCapabilities?, convTransport: ChatTransportKind?, convOrigin: String?, currentOrigin: String, hasMessages: Boolean = false): ChatTransportDecision {
         val originMatch = convOrigin == currentOrigin
         val result = when (convTransport) {
-        ChatTransportKind.LEGACY_CHAT -> ChatTransportDecision.Legacy
-        ChatTransportKind.SESSIONS -> if (!originMatch) ChatTransportDecision.Unavailable("This conversation is bound to a different server (origin isolation). Start a new conversation.") else ChatTransportDecision.Sessions(features?.features ?: ServerFeatures())
+        ChatTransportKind.SESSIONS -> when {
+            !originMatch -> ChatTransportDecision.Blocked("This conversation is bound to a different server (origin isolation). Start a new conversation.")
+            features?.state != CapabilityState.SUPPORTED -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
+            !features.features.session_chat -> ChatTransportDecision.Blocked("This server does not support session chat. Start a new conversation on a compatible server.")
+            else -> ChatTransportDecision.Sessions(features.features)
+        }
         null -> when {
+            hasMessages -> ChatTransportDecision.Blocked("This conversation cannot be continued. Start a new conversation.")
             features == null || features.state == CapabilityState.UNKNOWN -> ChatTransportDecision.Blocked("Unable to verify server capabilities. Check the connection and try again.")
-            hasMessages -> ChatTransportDecision.Legacy
-            features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Legacy
+            features.state == CapabilityState.UNSUPPORTED -> ChatTransportDecision.Blocked("This server does not support session chat.")
             features.features.session_chat -> ChatTransportDecision.Sessions(features.features)
-            else -> ChatTransportDecision.Legacy
+            else -> ChatTransportDecision.Blocked("This server does not support session chat.")
         }
         }
         val caps = features?.features?.let { "session_chat=${it.session_chat},session_chat_streaming=${it.session_chat_streaming},model_options=${it.model_options},session_model_lock=${it.session_model_lock},session_model_clear=${it.session_model_clear}" } ?: "null"
-        E2eLog.log("transportDecision caps=$caps storedTransport=$convTransport originMatch=$originMatch hasMessages=$hasMessages -> ${result::class.simpleName}")
+        E2eLog.log("transportDecision caps=$caps storedTransport=$convTransport originMatch=$originMatch -> ${result::class.simpleName}")
         return result
     }
 }
@@ -93,15 +95,4 @@ fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatchin
         md.digest().joinToString("") { "%02x".format(it) }
     }
     if (keyHash != null) "$urlPart-$keyHash" else urlPart
-}.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
-
-/** Legacy identity: only scheme://host:port (no path, no key hash). */
-@Deprecated("Use originIdentity(baseUrl, apiKey) for full isolation. Kept for migration.", level = DeprecationLevel.WARNING)
-fun legacyOriginIdentity(baseUrl: String): String = runCatching {
-    val uri = URI(baseUrl.trim().trimEnd('/'))
-    val scheme = uri.scheme.lowercase()
-    val host = uri.host.lowercase()
-    val defaultPort = if (scheme == "http") 80 else if (scheme == "https") 443 else -1
-    val port = if (uri.port != -1) uri.port else defaultPort
-    "$scheme://$host:$port"
 }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }

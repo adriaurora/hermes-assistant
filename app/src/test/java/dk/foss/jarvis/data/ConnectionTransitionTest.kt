@@ -7,11 +7,16 @@ import org.junit.Test
 
 class ConnectionTransitionTest {
     private val registration = DeviceRegistration("device-a", "fcm-token", "http://hermes-a:8642", "old-key")
-    private val a = JarvisSettings("HTTP://Hermes-A:8642/", "old-key")
+    private val a = JarvisSettings("http://hermes-a:8642", "old-key")
 
     @Test fun `equivalent origin does not revoke`() {
-        val result = ConnectionTransition.decide(a, JarvisSettings("http://hermes-a:8642/api", "new-key"), registration)
+        val result = ConnectionTransition.decide(a, JarvisSettings("http://hermes-a:8642", "new-key"), registration)
         assertFalse(result.revokeRequired)
+    }
+
+    @Test fun `different path requires revoke`() {
+        val result = ConnectionTransition.decide(a, JarvisSettings("http://hermes-a:8642/api", "new-key"), registration)
+        assertTrue(result.revokeRequired)
     }
 
     @Test fun `A to B requires revoke and preserves A registration`() {

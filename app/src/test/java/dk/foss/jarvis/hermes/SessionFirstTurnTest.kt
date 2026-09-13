@@ -247,7 +247,16 @@ class SessionFirstTurnTest {
 
     @Test fun clearIntent_onExistingSession_clearsModelBeforeTurn() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}")); server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody("event: done\ndata: {}\n\n")); val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder())); r.bindSession("o", "s1", ChatTransportKind.SESSIONS); r.pendingModelIntent = PendingModelIntent.Clear
-        assertTrue(startSessionTurn(r, client(), "o", "hello", "id", r.pendingModelIntent) is SessionTurnStartOutcome.Started); assertNull(r.pendingModelIntent); sendStream(client(), "s1"); val req = server.takeRequest(); assertEquals("/api/sessions/s1/model", req.path); assertEquals("{\"model\":null}", req.body.readUtf8()); assertEquals("/api/sessions/s1/chat/stream", server.takeRequest().path)
+        val c = client()
+        assertTrue(startSessionTurn(r, c, "o", "hello", "id", r.pendingModelIntent) is SessionTurnStartOutcome.Started)
+        assertNull(r.pendingModelIntent)
+        sendStream(c, "s1")
+        assertEquals(2, server.requestCount)
+        val modelRequest = server.takeRequest()
+        assertEquals("/api/sessions/s1/model", modelRequest.path)
+        // clearSessionModel deliberately sends an explicit JSON null, not an omitted field.
+        assertEquals("{\"model\":null}", modelRequest.body.readUtf8())
+        assertEquals("/api/sessions/s1/chat/stream", server.takeRequest().path)
     }
 
     @Test fun intentReset_onConversationSwitch() = runBlocking {

@@ -410,24 +410,6 @@ class EventRpcClientTest {
         }
     }
 
-    // 18. register con legacyDeviceId → body contiene el campo
-    @Test fun `register con legacyDeviceId envia legacy_device_id en body`() = runBlocking {
-        val responseBody = """{
-            "ok":true,"protocol_version":1,"result":{
-                "device_id":"d-1","device_secret":"s-1",
-                "state":"active","existing":false,"legacy_reconciled":true
-            }
-        }""".trimIndent()
-        server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().register("my-device", "push-token-123", legacyDeviceId = "legacy-abc-123")
-        assertTrue(result.isSuccess)
-        val r = result.getOrThrow()
-        val bodyStr = server.takeRequest().body.readUtf8()
-        assertTrue(bodyStr.contains("\"legacy_device_id\":\"legacy-abc-123\""))
-        // response con legacy_reconciled
-        assertEquals(true, r.legacy_reconciled)
-    }
-
     // 19. register sin legacyDeviceId → body NO contiene legacy_device_id
     @Test fun `register sin legacyDeviceId no envia legacy_device_id en body`() = runBlocking {
         val responseBody = """{
@@ -441,39 +423,6 @@ class EventRpcClientTest {
         assertTrue(result.isSuccess)
         val bodyStr = server.takeRequest().body.readUtf8()
         assertTrue(bodyStr.contains("\"type\":\"device.register\""))
-        // legacy_device_id NO debe aparecer
-        assertTrue(bodyStr.contains("legacy_device_id").not())
     }
 
-    // 20. respuesta con legacy_reconciled:true → success con legacy_reconciled==true
-    @Test fun `respuesta con legacy_reconciled_true decodifica true`() = runBlocking {
-        val responseBody = """{
-            "ok":true,"protocol_version":1,"result":{
-                "device_id":"d-2","device_secret":"s-2",
-                "state":"active","existing":false,"legacy_reconciled":true
-            }
-        }""".trimIndent()
-        server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().register("my-device", "push-token-456")
-        assertTrue(result.isSuccess)
-        val r = result.getOrThrow()
-        assertEquals("d-2", r.device_id)
-        assertEquals(true, r.legacy_reconciled)
-    }
-
-    // 21. respuesta vieja sin legacy_reconciled → success con legacy_reconciled==null
-    @Test fun `respuesta sin legacy_reconciled decodifica null`() = runBlocking {
-        val responseBody = """{
-            "ok":true,"protocol_version":1,"result":{
-                "device_id":"d-3","device_secret":"s-3",
-                "state":"active","existing":false
-            }
-        }""".trimIndent()
-        server.enqueue(MockResponse().setResponseCode(200).setBody(responseBody))
-        val result = client().register("my-device", "push-token-789")
-        assertTrue(result.isSuccess)
-        val r = result.getOrThrow()
-        assertEquals("d-3", r.device_id)
-        assertNull(r.legacy_reconciled)
-    }
 }

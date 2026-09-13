@@ -4,6 +4,8 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 /** Persists conversations as one JSON file each under filesDir/conversations/. */
@@ -36,7 +38,7 @@ class ConversationStore {
     suspend fun load(id: String): Conversation? = withContext(Dispatchers.IO) {
         val f = File(dir, "$id.json")
         if (!f.exists()) return@withContext null
-        runCatching { json.decodeFromString(Conversation.serializer(), f.readText()) }.getOrNull()
+        decodeConversation(f.readText())
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
@@ -49,7 +51,7 @@ class ConversationStore {
         (dir.listFiles { f -> f.extension == "json" } ?: emptyArray())
             .mapNotNull { f ->
                 runCatching {
-                    val c = json.decodeFromString(Conversation.serializer(), f.readText())
+                    val c = decodeConversation(f.readText()) ?: return@runCatching null
                     ConversationMeta(c.id, c.title, c.updatedAt, c.messages.size, c.sessionId, c.transport, c.origin)
                 }.getOrNull()
             }
@@ -61,7 +63,14 @@ class ConversationStore {
         load(id)?.let { save(it.copy(origin = newOrigin, updatedAt = System.currentTimeMillis())) }
     }
 
-    /** Retained for source compatibility; origin migration is now authenticated at repository boundary. */
-    @Deprecated("Sessions origins require authenticated verification")
-    suspend fun migrateOrigins(currentBaseUrl: String, currentApiKey: String?) = Unit
+    private fun decodeConversation(raw: String): Conversation? = runCatching {
+        try { json.decodeFromString(Conversation.serializer(), raw) }
+        catch (_: Exception) {
+            val obj = Json.decodeFromString(JsonObject.serializer(), raw).toMutableMap()
+            val stored = obj["transport"]?.jsonPrimitive?.content
+            if (stored == null || stored == "SESSIONS") throw IllegalArgumentException("invalid conversation")
+            obj.remove("transport")
+            json.decodeFromString(Conversation.serializer(), JsonObject(obj).toString())
+        }
+    }.getOrNull()
 }

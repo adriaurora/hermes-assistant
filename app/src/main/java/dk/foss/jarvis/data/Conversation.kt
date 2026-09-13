@@ -10,7 +10,7 @@ data class UiMessage(val role: String, val text: String, val isError: Boolean = 
 data class StoredMessage(val role: String, val text: String)
 
 /** A full saved conversation. */
-/** Sessions identity is unrelated to FCM device_id, legacy_device_id, event ids, or push protocol. */
+/** Sessions identity is unrelated to FCM device_id, event ids, or push protocol. */
 @Serializable
 data class Conversation(
     val id: String,

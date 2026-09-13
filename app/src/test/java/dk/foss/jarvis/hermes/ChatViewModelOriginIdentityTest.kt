@@ -61,21 +61,4 @@ class ChatViewModelOriginIdentityTest {
             identity.contains("-") && identity.substringAfterLast("-").matches(Regex("[0-9a-f]{16,}")))
     }
 
-    /**
-     * Verify that the new format is NOT equal to the legacy format, ensuring
-     * that migrated conversations can be distinguished.
-     */
-    @Test
-    fun `new_origin_identity_differs_from_legacy_same_url`() {
-        val baseUrl = "https://hermes.example.com/api/chat"
-        val apiKey = "key-123"
-        val newIdentity = originIdentity(baseUrl, apiKey)
-        val legacyIdentity = legacyOriginIdentity(baseUrl)
-
-        assertNotEquals("New identity must differ from legacy (different format)", newIdentity, legacyIdentity)
-        // New includes path, legacy does not
-        assertTrue("New includes path", newIdentity.contains("/api/chat"))
-        // Legacy is scheme://host:port
-        assertTrue("Legacy is host-based", legacyIdentity.startsWith("https://hermes.example.com:443"))
-    }
 }
