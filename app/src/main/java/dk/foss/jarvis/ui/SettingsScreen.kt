@@ -147,7 +147,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         pushPrefs.registrationState.collect { pushState = it }
     }
 
-    LaunchedEffect(baseUrl) {
+    LaunchedEffect(baseUrl, approvedOrigins) {
         if (isHttp) {
             currentHttpOrigin = originIdentity(baseUrl)
             isHttpApproved = approvedOrigins.contains(currentHttpOrigin)
@@ -180,7 +180,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 if (isHttp && !isHttpApproved && baseUrl != savedBaseUrl) {
                                     baseUrl = savedBaseUrl
                                     apiKey = ""
-                                    savedKey = savedKey
                                     status = null
                                 }
                                 onBack()
