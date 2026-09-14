@@ -8,7 +8,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,7 +15,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import dk.foss.jarvis.net.ApprovedOriginsStore
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmConnectionEffects
@@ -24,8 +22,6 @@ import dk.foss.jarvis.push.FcmRevokeWorker
 import dk.foss.jarvis.push.FcmTokenRegistration
 import dk.foss.jarvis.push.PushPrefs
 import androidx.work.WorkManager
-
-private val Context.dataStore by preferencesDataStore(name = "jarvis_settings")
 
 /** User configuration: how to reach Hermes. Model selection is left to Hermes. */
 data class JarvisSettings(
@@ -40,25 +36,21 @@ class SettingsStore internal constructor(
     private val secure: SecureStore,
     private val onConnectionChanged: suspend (JarvisSettings, JarvisSettings) -> Unit = { _, _ -> },
     private val withConnectionLock: suspend (suspend () -> Unit) -> Unit = { block -> block() },
-    /**
-     * Optional cleanup origins store.  When present, [moveForCleanup] and
-     * [revokeHttpOrigin] also clear the old origin from the cleanup allowance.
-     * In production this is an [AndroidApprovedOriginsStore] instance that
-     * shares the same DataStore file as this store.  In tests it is
-     * [InMemoryApprovedOriginsStore].
-     */
-    private val cleanupOriginsStore: ApprovedOriginsStore? = null,
 ) {
-    /** Android entry point: app DataStore + Keystore-backed SecureStore. */
+    /**
+     * Android entry point: uses the SAME shared DataStore instance that
+     * [AndroidApprovedOriginsStore] creates (file `jarvis_settings`).
+     * This guarantees a single source of truth — no multiple DataStore
+     * instances for the same file.
+     */
     constructor(context: Context) : this(
-        store = context.dataStore,
+        store = AndroidApprovedOriginsStore.dataStorePreferences(context),
         secure = SecureStore.get(context),
         onConnectionChanged = { old, new ->
             val app = context.applicationContext
             FcmConnectionEffects(PushPrefs(app), DeviceRegistryStore(app), { FcmRevokeWorker.schedule(app) }, { WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME) }).onConnectionChanged(old, new)
         },
         withConnectionLock = { block -> FcmLifecycle.withLock { block() } },
-        cleanupOriginsStore = AndroidApprovedOriginsStore(context),
     )
 
     private object Keys {
@@ -76,8 +68,8 @@ class SettingsStore internal constructor(
         // Stored as a string-set for future multi-endpoint support, but only one is ever active.
         val APPROVED_HTTP_ORIGINS = stringSetPreferencesKey("approved_http_origins")
         // Cleanup allowance: old endpoints pending a revoke worker.
-        // Stored separately from active approvals so that NetworkGate can
-        // check this scope exclusively for revoke operations.
+        // Lives in the SAME DataStore as active approvals so that
+        // moveForCleanup is a single atomic edit.
         val CLEANUP_HTTP_ORIGINS = stringSetPreferencesKey("cleanup_http_origins")
     }
 
@@ -110,33 +102,21 @@ class SettingsStore internal constructor(
      * If the new [baseUrl] is different from the old one and both use HTTP,
      * the old origin is atomically moved to the cleanup allowance so that
      * the revoke worker can still reach it — but ordinary traffic to the old
-     * endpoint is blocked immediately.
+     * endpoint is blocked immediately.  This is a single `store.edit`
+     * transaction, not a nested read/edit across multiple DataStores.
      */
     suspend fun updateConnection(baseUrl: String, apiKey: String?) {
         val normalized = baseUrl.trim().trimEnd('/')
         withConnectionLock {
             val old = settings.first()
 
-            // Atomic move: if we're changing from a different HTTP origin,
-            // move it to the cleanup allowance so that:
-            // - Ordinary traffic to the old origin is blocked immediately
-            // - The revoke worker can still reach it via cleanup scope
-            if (old.baseUrl != normalized && old.baseUrl.isNotBlank()) {
-                val oldOrigin = runCatching {
-                    dk.foss.jarvis.hermes.originIdentity(old.baseUrl.trim())
-                }.getOrNull()
-                oldOrigin?.let { origin ->
-                    cleanupOriginsStore?.moveForCleanup(origin)
-                }
-            }
-
             val newToken = when (apiKey) {
                 null -> old.apiKey
                 else -> apiKey.trim()
             }
-            // Persist the new connection while lifecycle lock is held. The
-            // callback schedules revoke only after this edit, so a follow-up
-            // registration can only observe B, never the old A settings.
+            // Single edit: persist new connection AND move old HTTP origin
+            // from active → cleanup.  Both are in the same DataStore so this
+            // is one atomic transaction — no nested DataStore read/edit.
             store.edit { p ->
                 p[Keys.BASE_URL] = normalized
                 if (apiKey != null) {
@@ -147,6 +127,21 @@ class SettingsStore internal constructor(
                 }
                 p.remove(Keys.API_KEY)
                 p.remove(Keys.MODEL)
+
+                // Atomic cleanup of old HTTP origin in the same edit.
+                if (old.baseUrl != normalized && old.baseUrl.isNotBlank()) {
+                    val oldOrigin = runCatching {
+                        dk.foss.jarvis.hermes.originIdentity(old.baseUrl.trim())
+                    }.getOrNull()
+                    oldOrigin?.let { origin ->
+                        val currentApproved = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
+                        val currentCleanup = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet<String>()
+                        if (origin in currentApproved) {
+                            p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - origin
+                            p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + origin
+                        }
+                    }
+                }
             }
             onConnectionChanged(old, JarvisSettings(normalized, newToken))
         }
@@ -165,10 +160,11 @@ class SettingsStore internal constructor(
     /**
      * Returns the set of HTTP origins in the cleanup allowance.
      * These are old endpoints that have been moved out of active approval
-     * while a revoke worker is pending.
+     * while a revoke worker is pending.  Read from the same DataStore.
      */
-    val cleanupHttpOrigins: Flow<Set<String>> = cleanupOriginsStore?.cleanupOriginsFlow()
-        ?: kotlinx.coroutines.flow.emptyFlow()
+    val cleanupHttpOrigins: Flow<Set<String>> = store.data.map { p ->
+        p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
+    }
 
     /**
      * Approve an HTTP origin.  Idempotent and non-blocking.
@@ -182,27 +178,30 @@ class SettingsStore internal constructor(
     }
 
     /**
-     * Revoke approval for an HTTP origin (active + cleanup).
-     * Used when the user manually removes an origin from both scopes.
+     * Revoke approval for an HTTP origin from BOTH active and cleanup.
+     * A single edit clears from both scopes.
      */
     suspend fun revokeHttpOrigin(origin: String) {
         store.edit { p ->
-            val current = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
-            if (origin in current) {
-                p[Keys.APPROVED_HTTP_ORIGINS] = current - origin
+            val currentApproved = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
+            val currentCleanup = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet<String>()
+            if (origin in currentApproved) {
+                p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - origin
+            }
+            if (origin in currentCleanup) {
+                p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup - origin
             }
         }
-        cleanupOriginsStore?.removeFromCleanup(origin)
     }
 
     /**
-     * Remove all HTTP origin approvals (active + cleanup).
+     * Remove all HTTP origin approvals from both active and cleanup.
      * Used when credentials are cleared or when the user wants a full reset.
      */
     suspend fun clearAllHttpApprovals() {
-        store.edit { p -> p.remove(Keys.APPROVED_HTTP_ORIGINS) }
-        cleanupOriginsStore?.let { store ->
-            store.clearAll()
+        store.edit { p ->
+            p.remove(Keys.APPROVED_HTTP_ORIGINS)
+            p.remove(Keys.CLEANUP_HTTP_ORIGINS)
         }
     }
 
@@ -212,19 +211,32 @@ class SettingsStore internal constructor(
      * different HTTP endpoint — the old origin must stop being reachable for
      * ordinary traffic while the revoke worker is pending.
      *
+     * Implemented as a single `store.edit` so both keys are updated atomically.
      * Idempotent: if [origin] is not in active approval it is silently
      * ignored.  If it's already in cleanup allowance nothing happens.
      */
     suspend fun moveForCleanup(origin: String) {
-        cleanupOriginsStore?.moveForCleanup(origin)
+        store.edit { p ->
+            val currentApproved = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
+            val currentCleanup = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet<String>()
+            if (origin in currentApproved) {
+                p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - origin
+                p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + origin
+            }
+        }
     }
 
     /**
-     * Remove an origin from the cleanup allowance.
+     * Remove an origin from the cleanup allowance only.
      * Used when the user manually forces cleanup revocation.
      */
     suspend fun removeFromCleanup(origin: String) {
-        cleanupOriginsStore?.removeFromCleanup(origin)
+        store.edit { p ->
+            val currentCleanup = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet<String>()
+            if (origin in currentCleanup) {
+                p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup - origin
+            }
+        }
     }
 
     /** Remove the legacy plaintext key + keys from removed features. */
