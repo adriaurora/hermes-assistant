@@ -31,6 +31,20 @@ Hermes URL + API key and go.
 The **brain is always Hermes** — the app only handles the ears, mouth, face, and
 OS integration.
 
+## Insecure HTTP policy
+
+The app enforces a fail-closed network gate (see `net/NetworkGate.kt`):
+
+- **HTTPS is always allowed** — TLS verification is preserved.
+- **HTTP is blocked by default** — no socket is opened to an unapproved endpoint.
+- **HTTP opt-in** — when you enter an `http://` base URL in Settings the UI shows
+  a warning banner and a checkbox.  Checking it approves that specific endpoint.
+  Approval is **per origin** (scheme + host + port + path), not per API key.
+- **Automatic revocation** — when settings change and the old endpoint must be
+  revoked, the HTTP approval for the old origin is removed after successful
+  revoke cleanup.  The old endpoint remains reachable only for the revoke
+  operation itself.
+
 ## Install
 
 Build from source (see below), or sideload a debug APK:
@@ -102,15 +116,20 @@ is archival documentation, not the current operational contract.
 
 | Layer | What |
 |---|---|
-| `hermes/HermesClient` | Sessions API (`/api/sessions/*`) for chat and voice, with SSE streaming when advertised. |
-| `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private
-  SharedPreferences. |
+| `net/NetworkGate` | Centralised fail-closed gate: HTTPS always allowed, HTTP only for explicitly approved origins. |
+| `net/Http` | Shared OkHttp clients (`base` + `streaming`), lazily initialised network gate. |
+| `net/ApprovedOriginsStore` | Persistent approved-HTTP-origins store (Android DataStore / in-memory). |
+| `hermes/HermesClient` | Sessions API (`/api/sessions/*`) for chat and voice, with SSE streaming when advertised. Gate validates before every call. |
+| `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private SharedPreferences. |
+| `data/SettingsStore` | Base URL, API key, and approved HTTP origins. |
 | `voice/SpeechInput` | STT via Android `SpeechRecognizer` (on-device where available). |
 | `voice/TtsEngine` | Android's built-in offline TTS. |
 | `ui/ConversationViewModel` | The listen → think → speak → listen loop. |
+| `ui/SettingsScreen` | Connection settings, HTTP opt-in checkbox, approved origins list with revoke. |
 | `assist/*` | `VoiceInteractionService` so the app can be the default assistant. |
 | `push/FcmMessagingService` | Optional FCM data-only wake → WorkManager worker (event ID only in push). |
-| `hermes/EventRpc` | Optional plugin Wire Protocol v1: device registration, event fetch/ACK, and pending sync. |
+| `push/FcmRevokeWorker` | WorkManager worker: revokes the old device registration, clears HTTP approval after success. |
+| `hermes/EventRpc` | Optional plugin Wire Protocol v1: device registration, event fetch/ACK, and pending sync. Gate validates before every call. |
 
 `HermesClient` and `EventRpc` are both deliberately coupled to the Hermes API;
 there is no separate companion or proxy service.
@@ -121,8 +140,9 @@ Stack: Kotlin + Jetpack Compose, minSdk 29 / target 34.
 
 - **On-device STT** quality/language support depends on the phone (API 31+
   uses the on-device recognizer when available).
-- Release builds deny cleartext HTTP — point them at an HTTPS endpoint or a
-  private route; debug builds allow plain LAN HTTP for development.
+- Release builds deny cleartext HTTP by default — point them at an HTTPS
+  endpoint or a private route; debug builds allow plain LAN HTTP for
+  development.  In both cases, HTTP requires explicit approval in Settings.
 - FCM notifications require matching Firebase config and the optional
   `hermes_assistant` plugin; see [FCM setup](docs/fcm-setup.md).
 - Tapping a notification opens the ordinary main screen; `MainActivity` deliberately
