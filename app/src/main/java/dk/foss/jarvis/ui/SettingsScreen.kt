@@ -75,6 +75,12 @@ private val HelmBorder08 = Color(0x14FFFFFF)
 
 // ─── Screen ──────────────────────────────────────────────────────────────────
 
+/**
+ * Settings screen with blocking HTTP consent dialog.
+ *
+ * HTTP (non-TLS) URLs require explicit user consent via [AlertDialog] before
+ * configuration can be saved or tested.  HTTPS is always allowed.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -93,9 +99,12 @@ fun SettingsScreen(onBack: () -> Unit) {
     val pushPrefs = remember { PushPrefs(context) }
 
     // HTTP origin approval state
-    var httpApprovalChecked by remember { mutableStateOf(false) }
     var approvedOrigins by remember { mutableStateOf<Set<String>>(emptySet()) }
     var currentHttpOrigin by remember { mutableStateOf<String?>(null) }
+    var isHttpApproved by remember { mutableStateOf(false) }
+
+    // Separate checkbox state for the dialog — reset each time it opens
+    var dialogCheckboxChecked by remember { mutableStateOf(false) }
     var showHttpApprovalDialog by remember { mutableStateOf(false) }
 
     // Determine if the current URL is HTTP
@@ -115,16 +124,6 @@ fun SettingsScreen(onBack: () -> Unit) {
             store.updateConnection(savedBaseUrl, "")
             savedKey = false
             status = null
-        }
-    }
-
-    fun saveApproval() {
-        if (httpApprovalChecked && currentHttpOrigin != null) {
-            scope.launch {
-                store.approveHttpOrigin(currentHttpOrigin!!)
-                // Reload approvals to show the updated list
-                approvedOrigins = store.approvedHttpOrigins.first()
-            }
         }
     }
 
@@ -151,9 +150,9 @@ fun SettingsScreen(onBack: () -> Unit) {
     LaunchedEffect(baseUrl) {
         if (isHttp) {
             currentHttpOrigin = originIdentity(baseUrl)
-            httpApprovalChecked = approvedOrigins.contains(currentHttpOrigin)
+            isHttpApproved = approvedOrigins.contains(currentHttpOrigin)
         } else {
-            httpApprovalChecked = false
+            isHttpApproved = false
             currentHttpOrigin = null
         }
     }
@@ -177,7 +176,13 @@ fun SettingsScreen(onBack: () -> Unit) {
                         },
                         navigationIcon = {
                             IconButton(onClick = {
-                                scope.launch { persist() }
+                                // E: discards unapproved HTTP changes on back
+                                if (isHttp && !isHttpApproved && baseUrl != savedBaseUrl) {
+                                    baseUrl = savedBaseUrl
+                                    apiKey = ""
+                                    savedKey = savedKey
+                                    status = null
+                                }
                                 onBack()
                             }, modifier = Modifier.padding(4.dp)) {
                                 Icon(
@@ -217,15 +222,32 @@ fun SettingsScreen(onBack: () -> Unit) {
                     keyboardType  = KeyboardType.Uri,
                 )
 
-                // HTTP warning banner (always shown for HTTP)
-                if (isHttp) {
+                // Persistent warning for HTTP
+                if (isHttp && isHttpApproved) {
                     Text(
-                        "⚠ Esta es una conexi\u00f3n HTTP insegura. El tr\u00e1fico no est\u00e1 encriptado. Use HTTPS cuando sea posible.",
+                        "\u26a0 Conexi\u00f3n no cifrada",
+                        fontFamily = RobotoSans,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFFFF5F56),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        "HTTP est\u00e1 habilitado para este servidor. HTTPS es la opci\u00f3n recomendada.",
+                        fontFamily = RobotoSans,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = HelmWhite35,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                } else if (isHttp) {
+                    Text(
+                        "\u26a0 Conexi\u00f3n no cifrada \u2014 requiere aprobaci\u00f3n.",
                         fontFamily = RobotoSans,
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
                         color = Color(0xFFFF5F56),
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
 
@@ -256,17 +278,13 @@ fun SettingsScreen(onBack: () -> Unit) {
                     color = HelmWhite35,
                 )
 
-                // ── HTTP origin approval — blocking dialog ──────────────────────
-                // When HTTP is used, the user must confirm via an AlertDialog.
-                // The inline checkbox has been replaced with a blocking dialog
-                // that requires explicit consent before allowing insecure traffic.
-
                 // ── Save & test ───────────────────────────────────────────
                 HelmFlatButton(
                     text   = "Save & test connection",
                     onClick = {
-                        if (isHttp && !httpApprovalChecked) {
-                            // Show blocking dialog — user must check consent first
+                        if (isHttp && !isHttpApproved) {
+                            // Open blocking dialog — user must consent first
+                            dialogCheckboxChecked = false
                             showHttpApprovalDialog = true
                         } else {
                             scope.launch {
@@ -288,9 +306,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     },
                     accent = true,
                     enabled = loaded && !testing && baseUrl.isNotBlank() &&
-                        (apiKey.isNotBlank() || savedKey) &&
-                        // HTTP requires explicit approval; HTTPS always allowed
-                        (!isHttp || httpApprovalChecked),
+                        (apiKey.isNotBlank() || savedKey),
                 )
 
                 if (testing) {
@@ -309,17 +325,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                 if (approvedOrigins.isNotEmpty()) {
                     HorizontalDivider(color = HelmBorder12, thickness = 0.5.dp)
                     SectionEyebrow("APPROVED HTTP ENDPOINTS")
-
-                    // Persistent indicator showing HTTP has been approved for this connection
-                    if (currentHttpOrigin != null && currentHttpOrigin in approvedOrigins) {
-                        Text(
-                            "\u2713 HTTP aprobado para esta conexi\u00f3n",
-                            fontFamily = RobotoSans,
-                            fontSize = 13.sp,
-                            color = HelmAccentTx,
-                            modifier = Modifier.padding(bottom = 4.dp),
-                        )
-                    }
 
                     approvedOrigins.forEach { origin ->
                         Row(
@@ -426,10 +431,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                 // ── HTTP approval AlertDialog ───────────────────────────
                 if (showHttpApprovalDialog) {
                     AlertDialog(
-                        onDismissRequest = { showHttpApprovalDialog = false },
+                        onDismissRequest = {
+                            showHttpApprovalDialog = false
+                        },
                         title = {
                             Text(
-                                text = "\u26a0 Conexi\u00f3n HTTP insegura",
+                                text = "Conexi\u00f3n HTTP no cifrada",
                                 fontFamily = RobotoSans,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Medium,
@@ -439,53 +446,69 @@ fun SettingsScreen(onBack: () -> Unit) {
                         text = {
                             Column {
                                 Text(
-                                    text = "El servidor configurado usa HTTP (sin cifrado). " +
-                                        "El tr\u00e1fico puede ser interceptado.\n\n" +
-                                        "A\u00fan no permite acceso HTTP a este servidor. " +
-                                        "Habil\u00edtelo manualmente para permitir conexiones no seguras.",
+                                    text = "Esta URL utiliza HTTP. La comunicaci\u00f3n entre este dispositivo y tu servidor Hermes no estar\u00e1 protegida mediante TLS.\n\n" +
+                                        "La clave de acceso, tus mensajes, transcripciones de voz y otros datos intercambiados con Hermes podr\u00edan ser interceptados o modificados por cualquier actor con acceso a la red.\n\n" +
+                                        "\u00dAsalo bajo tu responsabilidad y \u00fanicamente en redes que controles completamente.\n\n" +
+                                        "HTTPS es la opci\u00f3n recomendada.",
                                     fontFamily = RobotoSans,
                                     fontSize = 14.sp,
                                     lineHeight = 20.sp,
                                     color = HelmWhite55,
                                 )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(
+                                        checked = dialogCheckboxChecked,
+                                        onCheckedChange = { dialogCheckboxChecked = it },
+                                    )
+                                    Text(
+                                        text = "Entiendo los riesgos y quiero permitir HTTP para este servidor.",
+                                        fontFamily = RobotoSans,
+                                        fontSize = 14.sp,
+                                        lineHeight = 20.sp,
+                                        color = HelmWhite100,
+                                        modifier = Modifier.padding(start = 8.dp),
+                                    )
+                                }
                             }
                         },
                         confirmButton = {
                             TextButton(
                                 onClick = {
-                                    // Approve and proceed with save
+                                    // Chain: approve → persist → test all in same coroutine
                                     currentHttpOrigin?.let { origin ->
                                         scope.launch {
                                             store.approveHttpOrigin(origin)
                                             approvedOrigins = store.approvedHttpOrigins.first()
+                                            showHttpApprovalDialog = false
+                                            persist()
+                                            testing = true
+                                            status = "Testing\u2026"
+                                            val s = store.settings.first()
+                                            val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
+                                            testing = false
+                                            status = result.fold(
+                                                onSuccess = { ids ->
+                                                    "\u2713 Connected. ${ids.size} model(s)" +
+                                                        if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
+                                                },
+                                                onFailure = { "\u2717 ${it.message}" },
+                                            )
                                         }
                                     }
-                                    showHttpApprovalDialog = false
-                                    // Proceed with save after approval
-                                    scope.launch {
-                                        persist()
-                                        testing = true
-                                        status = "Testing\u2026"
-                                        val s = store.settings.first()
-                                        val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
-                                        testing = false
-                                        status = result.fold(
-                                            onSuccess = { ids ->
-                                                "\u2713 Connected. ${ids.size} model(s)" +
-                                                    if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
-                                            },
-                                            onFailure = { "\u2717 ${it.message}" },
-                                        )
-                                    }
                                 },
-                                enabled = httpApprovalChecked,
+                                enabled = dialogCheckboxChecked,
                             ) {
                                 Text(
                                     "Usar HTTP de todos modos",
                                     fontFamily = RobotoSans,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (httpApprovalChecked) HelmAccentTx else HelmWhite35,
+                                    color = if (dialogCheckboxChecked) HelmAccentTx else HelmWhite35,
                                 )
                             }
                         },

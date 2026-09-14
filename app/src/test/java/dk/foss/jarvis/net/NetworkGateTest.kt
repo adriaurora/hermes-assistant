@@ -114,4 +114,53 @@ class NetworkGateTest {
         store.add(origin)
         assertEquals(origin, assertAllowed("http://HERMES.LOCAL:8642"))
     }
+
+    // ── Strict validation for BOTH HTTP and HTTPS (G) ──────────────
+
+    @Test fun `https_malformed_missing_host_blocked`() = runBlocking {
+        // "https://" throws URISyntaxException (expects authority after //)
+        assertBlocked("https://", "Malformed")
+    }
+
+    @Test fun `https_malformed_not_absolute_blocked`() = runBlocking {
+        // "https:foo" is opaque (no authority) → blocked
+        assertBlocked("https:foo", "opaque")
+    }
+
+    @Test fun `https_with_userinfo_blocked`() = runBlocking {
+        // userinfo in HTTPS should be blocked — credentials belong in headers
+        assertBlocked("https://user:pass@hermes.local", "userinfo")
+    }
+
+    @Test fun `https_with_query_blocked`() = runBlocking {
+        assertBlocked("https://hermes.local?token=abc", "query")
+    }
+
+    @Test fun `https_with_fragment_blocked`() = runBlocking {
+        assertBlocked("https://hermes.local#section", "fragment")
+    }
+
+    @Test fun `http_with_userinfo_blocked`() = runBlocking {
+        store.add(originIdentity("http://hermes.local"))
+        // Even approved HTTP with userinfo is blocked
+        assertBlocked("http://user:pass@hermes.local", "userinfo")
+    }
+
+    @Test fun `http_with_query_blocked`() = runBlocking {
+        store.add(originIdentity("http://hermes.local"))
+        assertBlocked("http://hermes.local?debug=true", "query")
+    }
+
+    @Test fun `http_with_fragment_blocked`() = runBlocking {
+        store.add(originIdentity("http://hermes.local"))
+        assertBlocked("http://hermes.local#section", "fragment")
+    }
+
+    @Test fun `opaque_uri_blocked_http`() = runBlocking {
+        assertBlocked("http:hermes.local", "opaque")
+    }
+
+    @Test fun `opaque_uri_blocked_https`() = runBlocking {
+        assertBlocked("https:hermes.local", "opaque")
+    }
 }
