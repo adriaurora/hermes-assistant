@@ -3,31 +3,18 @@
   Network security configuration for Hermes Assistant.
 
   The app enforces HTTPS by default via its own NetworkGate.  This XML
-  configuration is ONLY applied to release builds and serves as the
-  platform-level fallback boundary.
+  configuration allows cleartext at the platform level so that the app gate
+  can make the final decision per-endpoint.
 
-  In release mode the Android platform denies cleartext traffic by default.
-  If a release build needs to reach an approved HTTP endpoint, the
-  application must include a matching domain in the <domain-config> section.
+  The Android platform policy is the broad boundary; NetworkGate is the
+  strict policy: HTTPS always allowed, HTTP only for explicitly approved
+  origins, malformed URLs always blocked.
 
-  For chat-only builds without FCM, this file is not referenced in the
-  manifest and has no effect.
+  In debug builds the manifest overlay sets usesCleartextTraffic="true"
+  so that LAN HTTP is reachable once approved.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false">
+    <base-config cleartextTrafficPermitted="true">
         <!-- TLS verification is preserved: no overrides here. -->
     </base-config>
-    <!--
-      Approved HTTP endpoints for release builds.
-      Each <domain> must match the exact origin the user has approved.
-      Wildcards are NOT recommended — approval is per-endpoint, not wildcard.
-
-      Example:
-      <domain includeSubdomains="false">10.0.0.1</domain>
-      <domain includeSubdomains="false">dev.local</domain>
-
-      Production release builds should leave this section empty or remove
-      the domain-config entirely.  Debug/release builds targeting specific
-      LAN servers must populate it manually.
-    -->
 </network-security-config>

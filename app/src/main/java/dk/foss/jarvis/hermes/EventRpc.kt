@@ -69,17 +69,13 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
     private val url = "${baseUrl.trimEnd('/')}/$RPC_PATH"
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    /** Resolve the network gate; falls back to the testing gate on JVM. */
+    /** Resolve the network gate; uses production gate on Android. */
     private fun resolveGate(): dk.foss.jarvis.net.NetworkGate {
-        // On Android, the gate uses Http.applicationContext which is set at app startup.
-        // On JVM tests, fall back to the testing gate.
-        return try {
-            val ctx = Http.applicationContext
-            if (ctx != null) Http.gate()
-            else Http.testingGate
-        } catch (_: Exception) {
-            Http.testingGate
-        }
+        // On Android (production), use the globally set Http.gate.
+        // On JVM tests (no context), use the testing gate.
+        val ctx = Http.applicationContext
+        if (ctx != null) return Http.gate()
+        return Http.testingGate
     }
 
     suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null): Result<RpcRegisterResult> =
@@ -164,6 +160,9 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
         is HermesHttpException -> EventFetchException(FetchFailureKind.HTTP, error.statusCode, error)
         is SerializationException -> EventFetchException(FetchFailureKind.SERIALIZATION, cause = error)
         is IOException -> EventFetchException(FetchFailureKind.NETWORK, cause = error)
+        is dk.foss.jarvis.net.BlockedRequest -> EventFetchException(
+            FetchFailureKind.HTTP, 403, error, "network_blocked",
+        )
         else -> EventFetchException(FetchFailureKind.OTHER, cause = error)
     }
 }

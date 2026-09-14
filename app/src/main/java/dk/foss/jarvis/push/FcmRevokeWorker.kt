@@ -54,11 +54,20 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 val oldOriginHttp = if (r.hermesOrigin.isNotBlank() && isHttpOrigin(r.hermesOrigin)) {
                     r.hermesOrigin
                 } else null
-                val o = FcmRevokePolicy.classify(
-                    EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
-                )
+                val revokeResult = EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke()
+                val error = revokeResult.exceptionOrNull()
+                // When the old origin was manually revoked before the worker ran,
+                // the gate blocks the revoke call with a BlockedRequest (wrapped
+                // inside EventFetchException). The old device is effectively gone
+                // — treat as success so cleanup completes without infinite retry.
+                val wasBlocked = error is dk.foss.jarvis.net.BlockedRequest ||
+                    (error is dk.foss.jarvis.hermes.EventFetchException &&
+                        error.cause is dk.foss.jarvis.net.BlockedRequest)
+                val o = FcmRevokePolicy.classify(if (wasBlocked) null else error)
                 when (o) {
-                    FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.RevokeOutcome.CredentialRejected -> {
+                    FcmRevokePolicy.RevokeOutcome.RevokeSuccess,
+                    FcmRevokePolicy.RevokeOutcome.CredentialRejected,
+                    -> {
                         FcmRevokeCleanup.onComplete(registry, secure, prefs, settingsStore, oldOriginHttp) {
                             FcmTokenRegistration.enqueueCurrent(app)
                             prefs.setRegistrationState(FcmRegistrationState.REGISTERING)

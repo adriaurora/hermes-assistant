@@ -11,18 +11,23 @@ import dk.foss.jarvis.hermes.originIdentity
  * ## Critical push lifecycle
  *
  * When settings change (endpoint, key, or disable), the old registration is
- * preserved and a revoke worker is scheduled.  The old origin MUST remain
- * accessible ONLY for the revoke cleanup — not for ordinary traffic.
+ * preserved and a revoke worker ([FcmRevokeWorker]) is scheduled.
  *
- * After the revoke completes successfully, the old HTTP origin approval is
- * removed so that no ordinary traffic can reach the deprecated endpoint.
+ * The old HTTP origin approval must remain active until the revoke worker
+ * completes — either successfully (removing the approval) or failing/being
+ * blocked (e.g. if the old origin was manually revoked by the user).
+ *
+ * When the user manually revokes an origin before the revoke worker runs,
+ * [FcmRevokeWorker] detects the [dk.foss.jarvis.net.BlockedRequest] and
+ * treats it as a successful revoke — the old device is effectively gone.
  *
  * ## Approval removal semantics
  *
  * The caller passes the old origin as a normalised string (the result of
  * [originIdentity] or `hermesOrigin` from the registry).  [onComplete]
- * removes it from the approved set.  If the old origin was HTTPS, nothing
- * is removed — HTTPS is always allowed and requires no approval.
+ * removes it from the approved set after a successful revoke.  If the old
+ * origin was HTTPS, nothing is removed — HTTPS is always allowed and
+ * requires no approval.
  */
 internal object FcmRevokeCleanup {
 

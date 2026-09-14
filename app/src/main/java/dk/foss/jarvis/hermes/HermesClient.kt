@@ -48,15 +48,11 @@ class HermesClient(
 ) {
     /** Resolve the network gate for this build variant. */
     private fun getGate(): dk.foss.jarvis.net.NetworkGate {
-        // On Android, the gate uses Http.applicationContext which is set at app startup.
-        // On JVM tests, fall back to the testing gate.
-        return try {
-            val ctx = Http.applicationContext
-            if (ctx != null) Http.gate()
-            else Http.testingGate
-        } catch (_: Exception) {
-            Http.testingGate
-        }
+        // On Android (production), use the globally set Http.gate.
+        // On JVM tests (no context), use the testing gate.
+        val ctx = Http.applicationContext
+        if (ctx != null) return Http.gate()
+        return Http.testingGate
     }
 
     interface StreamCallbacks {

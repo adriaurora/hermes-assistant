@@ -259,4 +259,15 @@ class FcmRevokePolicyTest {
         assertEquals(FetchFailureKind.NETWORK, ex.kind)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain, FcmRevokePolicy.classify(ex))
     }
+
+    @Test fun `classify network_blocked EventFetchException as success`() {
+        // When the old origin was manually revoked before the revoke worker ran,
+        // the gate blocks the revoke call. The old device is effectively gone —
+        // the worker should treat this as success (no infinite retry).
+        val blocked = dk.foss.jarvis.net.BlockedRequest("HTTP blocked: old origin revoked")
+        val efx = EventFetchException(
+            FetchFailureKind.HTTP, 403, blocked, "network_blocked",
+        )
+        assertEquals(FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.classify(efx))
+    }
 }

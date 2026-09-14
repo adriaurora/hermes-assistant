@@ -33,10 +33,12 @@ class NetworkGateTest {
     @Test fun `https_allowed_always`() = runBlocking {
         // HTTPS is always allowed regardless of origin form
         val r1 = assertAllowed("https://h:1")
-        val r2 = assertAllowed("https://h:1:443")
+        val r2 = assertAllowed("https://h:443")
+        val r3 = assertAllowed("https://hermes.local/api/chat")
         // Both should succeed (return origin identity string)
         assertTrue(r1.isNotEmpty())
         assertTrue(r2.isNotEmpty())
+        assertTrue(r3.isNotEmpty())
         store.add("https://hermes.local/api/chat") // HTTPS does not need approval
     }
 

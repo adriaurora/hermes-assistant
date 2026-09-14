@@ -87,4 +87,39 @@ class AndroidApprovedOriginsStoreTest {
         assertEquals(1, store.list().size)
         assertEquals(true, store.isApproved("http://dev.local:8642"))
     }
+
+    @Test fun `clearAllExcept_keeps_specific_origin`() = runBlocking {
+        setup()
+        store.add("http://a.local:8642")
+        store.add("http://b.local:8642")
+        store.add("http://c.local:8642")
+
+        store.clearAllExcept("http://b.local:8642")
+
+        val approvals = store.list()
+        assertEquals(setOf("http://b.local:8642"), approvals)
+    }
+
+    @Test fun `clearAllExcept_noop_when_single_origin`() = runBlocking {
+        setup()
+        store.add("http://dev.local:8642")
+
+        store.clearAllExcept("http://dev.local:8642")
+
+        val approvals = store.list()
+        assertEquals(setOf("http://dev.local:8642"), approvals)
+    }
+
+    @Test fun `clearAllExcept_nonexistent_keep_is_noop`() = runBlocking {
+        setup()
+        store.add("http://a.local:8642")
+        store.add("http://b.local:8642")
+
+        store.clearAllExcept("http://nonexistent.local")
+
+        val approvals = store.list()
+        assertEquals(2, approvals.size)
+        assertEquals(true, approvals.contains("http://a.local:8642"))
+        assertEquals(true, approvals.contains("http://b.local:8642"))
+    }
 }

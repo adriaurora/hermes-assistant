@@ -17,8 +17,10 @@ import kotlinx.coroutines.runBlocking
  * [dk.foss.jarvis.hermes.originIdentity]: scheme + lowercase host +
  * (explicit default port) + path (no trailing slash).
  *
- * The production implementation backs onto Android DataStore; the in-memory
- * variant is used in JVM tests.
+ * The production implementation ([AndroidApprovedOriginsStore]) uses the same
+ * DataStore file and key as [dk.foss.jarvis.data.SettingsStore] so there is a
+ * single source of truth: `jarvis_settings` → `approved_http_origins` key.
+ * The in-memory variant is used in JVM tests.
  */
 interface ApprovedOriginsStore {
     /** Returns the current set of approved origin strings. */
@@ -38,6 +40,9 @@ interface ApprovedOriginsStore {
 
     /** Remove all approved origins. */
     suspend fun clearAll()
+
+    /** Remove all approved origins except [keep]. */
+    suspend fun clearAllExcept(keep: String)
 
     companion object {
         /**
@@ -70,16 +75,26 @@ class InMemoryApprovedOriginsStore : ApprovedOriginsStore {
     override suspend fun remove(origin: String) { set.remove(origin) }
     override suspend fun isApproved(origin: String): Boolean = origin in set
     override suspend fun clearAll() { set.clear() }
+    override suspend fun clearAllExcept(keep: String) {
+        if (keep in set && set.size > 1) {
+            // Remove all origins except the one being kept.
+            set.removeAll { it != keep }
+        }
+    }
     override fun isApprovedSync(origin: String): Boolean = origin in set
 }
 
-// ─── Android implementation ──────────────────────────────────────────────────
+// ─── Shared DataStore extension (same as SettingsStore uses) ──────────────────
 
-private val Context.approvedOriginsDataStore by preferencesDataStore(name = "approved_origins")
+private val Context.jarvisDataStore by preferencesDataStore(name = "jarvis_settings")
 
 /**
  * Android-backed implementation backed by a Preferences DataStore.
- * Stored as a string-set under the key "approved_origins".
+ *
+ * Uses the same DataStore file (`jarvis_settings`) and key
+ * (`approved_http_origins`) as [dk.foss.jarvis.data.SettingsStore] so that
+ * there is exactly one durable source of truth.  The key name matches the
+ * one in SettingsStore.Keys.APPROVED_HTTP_ORIGINS.
  *
  * The synchronous check falls back to the suspending version because
  * DataStore access is inherently asynchronous.  Production code always
@@ -87,10 +102,11 @@ private val Context.approvedOriginsDataStore by preferencesDataStore(name = "app
  * which is called from inside a suspending coroutine context.
  */
 class AndroidApprovedOriginsStore(private val store: DataStore<Preferences>) : ApprovedOriginsStore {
-    constructor(context: Context) : this(context.applicationContext.approvedOriginsDataStore)
+    constructor(context: Context) : this(context.applicationContext.jarvisDataStore)
 
     private companion object {
-        val KEY = stringSetPreferencesKey("approved_origins")
+        // MUST match SettingsStore.Keys.APPROVED_HTTP_ORIGINS exactly.
+        val KEY = stringSetPreferencesKey("approved_http_origins")
     }
 
     override suspend fun list(): Set<String> = store.data.map { it[KEY] ?: emptySet() }.first()
@@ -111,6 +127,16 @@ class AndroidApprovedOriginsStore(private val store: DataStore<Preferences>) : A
 
     override suspend fun clearAll() {
         store.edit { prefs -> prefs.remove(KEY) }
+    }
+
+    override suspend fun clearAllExcept(keep: String) {
+        store.edit { prefs ->
+            val current = prefs[KEY] ?: emptySet<String>()
+            if (keep in current && current.size > 1) {
+                // Keep only the specified origin; remove all others.
+                prefs[KEY] = setOf(keep)
+            }
+        }
     }
 
     override suspend fun isApproved(origin: String): Boolean = origin in list()
