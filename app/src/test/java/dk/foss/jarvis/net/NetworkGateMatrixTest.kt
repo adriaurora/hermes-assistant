@@ -20,7 +20,12 @@ class NetworkGateMatrixTest {
 
     private val store = Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore
 
-    @Before fun setUp() = runBlocking { store.clearAll() }
+    @Before fun setUp() {
+        runBlocking {
+            store.clearAll()
+            (Http.testingGate.cleanupStore as? InMemoryApprovedOriginsStore)?.clearAll()
+        }
+    }
 
     // ── Scheme matrix ───────────────────────────────────────────────────
 
