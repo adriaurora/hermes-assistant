@@ -1,5 +1,6 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.BlockedRequest
 import dk.foss.jarvis.net.Http
 import dk.foss.jarvis.push.isValidHermesEventId
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +69,19 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
     private val url = "${baseUrl.trimEnd('/')}/$RPC_PATH"
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
+    /** Resolve the network gate; falls back to the testing gate on JVM. */
+    private fun resolveGate(): dk.foss.jarvis.net.NetworkGate {
+        // On Android, the gate uses Http.applicationContext which is set at app startup.
+        // On JVM tests, fall back to the testing gate.
+        return try {
+            val ctx = Http.applicationContext
+            if (ctx != null) Http.gate()
+            else Http.testingGate
+        } catch (_: Exception) {
+            Http.testingGate
+        }
+    }
+
     suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null): Result<RpcRegisterResult> =
         call(RpcRegisterBody(label = label, push = RpcPushBody(token = token), device_id = deviceId, device_secret = deviceSecret), RpcRegisterResult.serializer())
 
@@ -105,6 +119,7 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
 
     suspend fun probe(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
+            resolveGate().validate(baseUrl)
             val body = HermesJson.encodeToString(RpcProbeBody.serializer(), RpcProbeBody())
             val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $apiKey").addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(jsonMedia)).build()
             Http.base.newCall(request).execute().use { it.code }
@@ -115,6 +130,7 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
 
     private suspend fun <T> call(body: Any, serializer: KSerializer<T>, acceptsNull: Boolean = false): Result<T> = withContext(Dispatchers.IO) {
         runCatching {
+            resolveGate().validate(baseUrl)
             val encoded = when (body) {
                 is RpcRegisterBody -> HermesJson.encodeToString(RpcRegisterBody.serializer(), body)
                 is RpcTokenBody -> HermesJson.encodeToString(RpcTokenBody.serializer(), body)

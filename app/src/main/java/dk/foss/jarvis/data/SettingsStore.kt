@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,9 @@ class SettingsStore internal constructor(
         val ELEVEN_KEY = stringPreferencesKey("eleven_key")
         val ELEVEN_VOICE = stringPreferencesKey("eleven_voice")
         val WAKE_ENABLED = booleanPreferencesKey("wake_enabled")
+        // Insecure HTTP origin approvals (per-endpoint, not per key).
+        // Stored as a string-set for future multi-endpoint support, but only one is ever active.
+        val APPROVED_HTTP_ORIGINS = stringSetPreferencesKey("approved_http_origins")
     }
 
     private val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -107,6 +111,46 @@ class SettingsStore internal constructor(
             }
             onConnectionChanged(old, JarvisSettings(normalized, newToken))
         }
+    }
+
+    // ─── HTTP origin approvals ──────────────────────────────────────────────
+
+    /**
+     * Returns the set of HTTP origins that have been explicitly approved.
+     * Origins are the normalised form from [dk.foss.jarvis.hermes.originIdentity].
+     */
+    val approvedHttpOrigins: Flow<Set<String>> = store.data.map { p ->
+        p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
+    }
+
+    /**
+     * Approve an HTTP origin.  Idempotent and non-blocking.
+     * The origin must be the normalised form (e.g. "http://10.0.0.1:8642").
+     */
+    suspend fun approveHttpOrigin(origin: String) {
+        store.edit { p ->
+            val current = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
+            p[Keys.APPROVED_HTTP_ORIGINS] = current + origin
+        }
+    }
+
+    /**
+     * Revoke approval for an HTTP origin.  Idempotent.
+     */
+    suspend fun revokeHttpOrigin(origin: String) {
+        store.edit { p ->
+            val current = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
+            if (origin in current) {
+                p[Keys.APPROVED_HTTP_ORIGINS] = current - origin
+            }
+        }
+    }
+
+    /**
+     * Remove all HTTP origin approvals (used when credentials are cleared).
+     */
+    suspend fun clearAllHttpApprovals() {
+        store.edit { p -> p.remove(Keys.APPROVED_HTTP_ORIGINS) }
     }
 
     /** Remove the legacy plaintext key + keys from removed features. */

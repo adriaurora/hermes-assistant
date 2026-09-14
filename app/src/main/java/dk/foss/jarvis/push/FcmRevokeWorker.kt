@@ -13,6 +13,12 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
         private const val WORK_NAME = "hermes-fcm-revoke"
         internal val REVOKE_EXISTING_WORK_POLICY: ExistingWorkPolicy = ExistingWorkPolicy.KEEP
 
+        /** Check if a URL string uses HTTP scheme. */
+        private fun isHttpOrigin(url: String): Boolean = runCatching {
+            val uri = java.net.URI.create(url.trim())
+            uri.scheme?.lowercase() == "http"
+        }.getOrDefault(false)
+
         fun schedule(c: Context) {
             val request = OneTimeWorkRequestBuilder<FcmRevokeWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -27,12 +33,14 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
         val prefs = PushPrefs(app)
         if (!prefs.isPendingRevoke()) return@withLockReturning Result.success()
 
+        val settingsStore = SettingsStore(app)
         val registry = DeviceRegistryStore(app)
         val secure = SecureStore.get(app)
+        val settings = settingsStore.settings.first()
 
-        when (val state = registry.loadOrMigrate(SettingsStore(app).settings.first())) {
+        when (val state = registry.loadOrMigrate(settings)) {
             RegistryState.Empty -> {
-                FcmRevokeCleanup.onComplete(registry, secure, prefs) {
+                FcmRevokeCleanup.onComplete(registry, secure, prefs, settingsStore) {
                     FcmTokenRegistration.enqueueCurrent(app)
                     prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
                 }
@@ -40,12 +48,18 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             }
             is RegistryState.Registered -> {
                 val r = state.registration
+                // Capture the old origin BEFORE the revoke call so we can
+                // remove its HTTP approval after successful revoke.
+                // Only clear HTTP approval — HTTPS needs none.
+                val oldOriginHttp = if (r.hermesOrigin.isNotBlank() && isHttpOrigin(r.hermesOrigin)) {
+                    r.hermesOrigin
+                } else null
                 val o = FcmRevokePolicy.classify(
                     EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke().exceptionOrNull()
                 )
                 when (o) {
                     FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.RevokeOutcome.CredentialRejected -> {
-                        FcmRevokeCleanup.onComplete(registry, secure, prefs) {
+                        FcmRevokeCleanup.onComplete(registry, secure, prefs, settingsStore, oldOriginHttp) {
                             FcmTokenRegistration.enqueueCurrent(app)
                             prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
                         }

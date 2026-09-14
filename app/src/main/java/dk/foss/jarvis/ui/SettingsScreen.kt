@@ -5,6 +5,7 @@ import android.content.Intent
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,11 +46,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import dk.foss.jarvis.BuildConfig
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dk.foss.jarvis.BuildConfig
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.HermesClient
+import dk.foss.jarvis.hermes.originIdentity
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmRegistrationState
 import dk.foss.jarvis.push.FcmTokenRegistration
@@ -88,6 +91,19 @@ fun SettingsScreen(onBack: () -> Unit) {
     var pushState by remember { mutableStateOf(FcmRegistrationState.DISABLED) }
     val pushPrefs = remember { PushPrefs(context) }
 
+    // HTTP origin approval state
+    var httpApprovalChecked by remember { mutableStateOf(false) }
+    var approvedOrigins by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var currentHttpOrigin by remember { mutableStateOf<String?>(null) }
+
+    // Determine if the current URL is HTTP
+    val isHttp = remember(baseUrl) {
+        runCatching {
+            val uri = java.net.URI.create(baseUrl.trim())
+            uri.scheme?.lowercase() == "http"
+        }.getOrDefault(false)
+    }
+
     suspend fun persist() {
         store.updateConnection(baseUrl, apiKey.ifBlank { null })
     }
@@ -100,16 +116,44 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    fun saveApproval() {
+        if (httpApprovalChecked && currentHttpOrigin != null) {
+            scope.launch {
+                store.approveHttpOrigin(currentHttpOrigin!!)
+                // Reload approvals to show the updated list
+                approvedOrigins = store.approvedHttpOrigins.first()
+            }
+        }
+    }
+
+    fun revokeApproval(origin: String) {
+        scope.launch {
+            store.revokeHttpOrigin(origin)
+            approvedOrigins = store.approvedHttpOrigins.first()
+        }
+    }
+
     LaunchedEffect(Unit) {
         val s = store.settings.first()
         savedBaseUrl = s.baseUrl
         baseUrl = s.baseUrl
         savedKey = s.apiKey.isNotEmpty()
         loaded = true
+        approvedOrigins = store.approvedHttpOrigins.first()
     }
 
     LaunchedEffect(Unit) {
         pushPrefs.registrationState.collect { pushState = it }
+    }
+
+    LaunchedEffect(baseUrl) {
+        if (isHttp) {
+            currentHttpOrigin = originIdentity(baseUrl)
+            httpApprovalChecked = approvedOrigins.contains(currentHttpOrigin)
+        } else {
+            httpApprovalChecked = false
+            currentHttpOrigin = null
+        }
     }
 
     DeepSpaceBackground(active = false) {
@@ -171,6 +215,18 @@ fun SettingsScreen(onBack: () -> Unit) {
                     keyboardType  = KeyboardType.Uri,
                 )
 
+                // HTTP warning banner
+                if (isHttp) {
+                    Text(
+                        "⚠ This is an insecure HTTP connection. Traffic is unencrypted. Use HTTPS when possible.",
+                        fontFamily = RobotoSans,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = Color(0xFFFF5F56),
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+
                 HelmInput(
                     label         = "API key (Bearer)",
                     value         = apiKey,
@@ -198,11 +254,50 @@ fun SettingsScreen(onBack: () -> Unit) {
                     color = HelmWhite35,
                 )
 
+                // ── HTTP origin approval (HTTP only) ──────────────────────
+                if (isHttp) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(HelmSurface)
+                            .border(0.5.dp, HelmBorder12)
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                            .clickable { httpApprovalChecked = !httpApprovalChecked },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = httpApprovalChecked,
+                            onCheckedChange = { httpApprovalChecked = it },
+                        )
+                        Text(
+                            "Allow insecure HTTP to this endpoint",
+                            fontFamily = RobotoSans,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            color = HelmWhite100,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                    Text(
+                        "This allows the app to send unencrypted HTTP requests to this server. " +
+                            "Only enable on trusted LAN networks with a development server.",
+                        fontFamily = RobotoSans,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = HelmWhite35,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+
                 // ── Save & test ───────────────────────────────────────────
                 HelmFlatButton(
                     text   = "Save & test connection",
                     onClick = {
                         scope.launch {
+                            // Save approval if changed
+                            if (httpApprovalChecked && isHttp && currentHttpOrigin != null) {
+                                store.approveHttpOrigin(currentHttpOrigin!!)
+                            }
                             persist()
                             testing = true
                             status = "Testing\u2026"
@@ -220,7 +315,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                     },
                     accent = true,
                     enabled = loaded && !testing && baseUrl.isNotBlank() &&
-                        (apiKey.isNotBlank() || savedKey),
+                        (apiKey.isNotBlank() || savedKey) &&
+                        // HTTP requires explicit approval; HTTPS always allowed
+                        (!isHttp || httpApprovalChecked),
                 )
 
                 if (testing) {
@@ -233,6 +330,50 @@ fun SettingsScreen(onBack: () -> Unit) {
 
                 status?.let {
                     HelmStatusText(it)
+                }
+
+                // ── Approved HTTP origins (persistent setting) ────────────
+                if (approvedOrigins.isNotEmpty()) {
+                    HorizontalDivider(color = HelmBorder12, thickness = 0.5.dp)
+                    SectionEyebrow("APPROVED HTTP ENDPOINTS")
+                    approvedOrigins.forEach { origin ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(HelmSurface)
+                                .border(0.5.dp, HelmBorder12)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                origin,
+                                fontFamily = RobotoMono,
+                                fontSize = 13.sp,
+                                color = HelmWhite55,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { revokeApproval(origin) },
+                                modifier = Modifier.padding(end = 4.dp),
+                            ) {
+                                Text(
+                                    "Revoke",
+                                    fontFamily = RobotoSans,
+                                    fontSize = 12.sp,
+                                    color = HelmWhite55,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "These endpoints have been approved for insecure HTTP access. " +
+                            "They remain approved until explicitly revoked or when credentials are cleared.",
+                        fontFamily = RobotoSans,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = HelmWhite35,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
 
                 HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
