@@ -48,6 +48,9 @@ object Http {
     /**
      * Production network gate backed by Android DataStore.
      * The gate is lazily initialised from [applicationContext].
+     *
+     * The production gate includes a cleanup store so that [validateForCleanup]
+     * can check the pending-revoke allowance.
      */
     @Volatile
     private var _gate: NetworkGate? = null
@@ -61,8 +64,9 @@ object Http {
         val ctx = applicationContext
             ?: throw IllegalStateException("Network gate not initialised — set Http.applicationContext first")
         synchronized(this) {
-            _gate ?: AndroidApprovedOriginsStore(ctx).let { store ->
-                NetworkGate(store).also { _gate = it }
+            _gate ?: run {
+                val activeStore = AndroidApprovedOriginsStore(ctx)
+                NetworkGate(activeStore, activeStore).also { _gate = it }
             }
         }
         return _gate!!
@@ -71,8 +75,14 @@ object Http {
     /**
      * Testing gate backed by an in-memory store.  Available only in JVM tests.
      * Call this from your test setup to inject a fresh gate with known state.
+     *
+     * The testing gate includes an in-memory cleanup store so that
+     * [validateForCleanup] can be tested alongside regular [validate].
      */
-    internal val testingGate = NetworkGate(InMemoryApprovedOriginsStore())
+    internal val testingGate = {
+        val activeStore = InMemoryApprovedOriginsStore()
+        NetworkGate(activeStore, activeStore)
+    }()
 
     /** Reset the production gate (useful in tests that reuse the Http singleton). */
     internal fun resetGate() { _gate = null; applicationContext = null }

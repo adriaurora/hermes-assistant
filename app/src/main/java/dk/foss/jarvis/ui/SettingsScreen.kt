@@ -100,6 +100,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     // HTTP origin approval state
     var approvedOrigins by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var cleanupOrigins by remember { mutableStateOf<Set<String>>(emptySet()) }
     var currentHttpOrigin by remember { mutableStateOf<String?>(null) }
     var isHttpApproved by remember { mutableStateOf(false) }
 
@@ -131,6 +132,14 @@ fun SettingsScreen(onBack: () -> Unit) {
         scope.launch {
             store.revokeHttpOrigin(origin)
             approvedOrigins = store.approvedHttpOrigins.first()
+            cleanupOrigins = store.cleanupHttpOrigins.first()
+        }
+    }
+
+    fun revokeCleanup(origin: String) {
+        scope.launch {
+            store.revokeHttpOrigin(origin)
+            cleanupOrigins = store.cleanupHttpOrigins.first()
         }
     }
 
@@ -141,6 +150,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         savedKey = s.apiKey.isNotEmpty()
         loaded = true
         approvedOrigins = store.approvedHttpOrigins.first()
+        cleanupOrigins = store.cleanupHttpOrigins.first()
     }
 
     LaunchedEffect(Unit) {
@@ -155,6 +165,10 @@ fun SettingsScreen(onBack: () -> Unit) {
             isHttpApproved = false
             currentHttpOrigin = null
         }
+    }
+
+    LaunchedEffect(store.cleanupHttpOrigins) {
+        store.cleanupHttpOrigins.collect { cleanupOrigins = it }
     }
 
     DeepSpaceBackground(active = false) {
@@ -365,6 +379,51 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                 }
 
+                // ── Pending cleanup (revoke) origins ──────────────────────
+                if (cleanupOrigins.isNotEmpty()) {
+                    HorizontalDivider(color = HelmBorder12, thickness = 0.5.dp)
+                    SectionEyebrow("PENDING REVOKE CLEANUP")
+
+                    cleanupOrigins.forEach { origin ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(HelmSurface)
+                                .border(0.5.dp, HelmBorder12)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                origin,
+                                fontFamily = RobotoMono,
+                                fontSize = 13.sp,
+                                color = Color(0xFFFF5F56),
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { revokeCleanup(origin) },
+                                modifier = Modifier.padding(end = 4.dp),
+                            ) {
+                                Text(
+                                    "Forzar revocaci\u00f3n del cleanup",
+                                    fontFamily = RobotoSans,
+                                    fontSize = 12.sp,
+                                    color = HelmWhite55,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "Endpoints antiguos pendientes de revocaci\u00f3n FCM. " +
+                            "Solo accesibles para cleanup. No son v\u00e1lidos para tr\u00e1fico ordinario.",
+                        fontFamily = RobotoSans,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = HelmWhite35,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
                 HorizontalDivider(color = HelmBorder08, thickness = 0.5.dp)
                 SectionEyebrow("NOTIFICATIONS")
                 if (!BuildConfig.FCM_AVAILABLE) {
@@ -483,6 +542,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                         scope.launch {
                                             store.approveHttpOrigin(origin)
                                             approvedOrigins = store.approvedHttpOrigins.first()
+                                            cleanupOrigins = store.cleanupHttpOrigins.first()
                                             showHttpApprovalDialog = false
                                             persist()
                                             testing = true

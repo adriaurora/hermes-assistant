@@ -24,11 +24,25 @@ import dk.foss.jarvis.hermes.originIdentity
  * for conversation isolation (scheme lowercased, host lowercased, default port
  * folded, path preserved, no trailing slash).
  *
- * This object is stateless; it delegates to [approvedOrigins] for the
- * approved list.  The store is passed at construction so that production code
+ * ## Scope separation
+ *
+ * Origins live in one of two scopes:
+ *
+ * 1. **Active approval** (ordinary traffic) — checked by [validate].
+ * 2. **Cleanup allowance** (revoke only) — checked by [validateForCleanup].
+ *    Used for the old endpoint when the user switches to a new one: it is
+ *    blocked for ordinary access but remains reachable for the pending revoke.
+ *
+ * The atomic transition from active → cleanup is [ApprovedOriginsStore.moveForCleanup].
+ *
+ * This object is stateless; it delegates to the two stores for the
+ * approval lists.  Both are passed at construction so that production code
  * and tests can inject different implementations.
  */
-class NetworkGate(val approvedOrigins: ApprovedOriginsStore) {
+class NetworkGate(
+    val approvedOrigins: ApprovedOriginsStore,
+    val cleanupStore: ApprovedOriginsStore? = null,
+) {
 
     /**
      * Validate [baseUrl] before any network call.
@@ -42,7 +56,7 @@ class NetworkGate(val approvedOrigins: ApprovedOriginsStore) {
      * 6. No userinfo (credentials belong in the Authorization header)
      * 7. No query string (origins never include query)
      * 8. No fragment (origins never include fragments)
-     * 9. For HTTP only: approved in [ApprovedOriginsStore]
+     * 9. For HTTP only: approved in [ApprovedOriginsStore] active set
      *
      * Canonicalisation (originIdentity) happens **only after** all validation
      * above has passed, so a malformed URL is never silently converted.
@@ -91,7 +105,7 @@ class NetworkGate(val approvedOrigins: ApprovedOriginsStore) {
 
         // ── Scheme-specific checks ───────────────────────────────────
 
-        // 10. HTTP — must be approved (per endpoint, not per key).
+        // 10. HTTP — must be approved in the active set (per endpoint, not per key).
         if (lowerScheme == "http") {
             if (!approvedOrigins.isApprovedSync(originIdentity(baseUrl))) {
                 throw BlockedRequest(
@@ -104,6 +118,58 @@ class NetworkGate(val approvedOrigins: ApprovedOriginsStore) {
         }
 
         // All checks passed — canonicalise
+        return originIdentity(baseUrl)
+    }
+
+    /**
+     * Validate [baseUrl] for cleanup/revoke purposes only.
+     *
+     * This checks the **cleanup allowance** set, not the active approval set.
+     * Used by the FCM revoke worker to reach the old endpoint after the user
+     * has switched to a new one.
+     *
+     * @throws BlockedRequest if the URL is not in the cleanup allowance.
+     * @return the canonical [originIdentity] string.
+     */
+    fun validateForCleanup(baseUrl: String): String {
+        val trimmed = baseUrl.trim()
+
+        if (trimmed.isEmpty()) throw BlockedRequest("Empty URL")
+
+        val uri = runCatching { java.net.URI.create(trimmed) }.getOrNull()
+            ?: throw BlockedRequest("Malformed URL: ${baseUrl.take(80)}")
+
+        val scheme = uri.scheme ?: throw BlockedRequest("URL missing scheme: ${baseUrl.take(80)}")
+        val lowerScheme = scheme.lowercase()
+
+        when (lowerScheme) {
+            "https" -> {}
+            "http"  -> {}
+            else    -> throw BlockedRequest("Unsupported scheme '$lowerScheme' (allowed: http, https)")
+        }
+
+        if (uri.isOpaque) throw BlockedRequest("Malformed URL (opaque, no authority): ${baseUrl.take(80)}")
+        if (uri.host == null) throw BlockedRequest("URL missing host: ${baseUrl.take(80)}")
+        if (uri.userInfo != null) throw BlockedRequest("URL contains userinfo: ${baseUrl.take(80)}")
+        if (uri.query != null) throw BlockedRequest("URL contains query: ${baseUrl.take(80)}")
+        if (uri.fragment != null) throw BlockedRequest("URL contains fragment: ${baseUrl.take(80)}")
+
+        // For HTTP: must be in the active set OR the cleanup allowance.
+        if (lowerScheme == "http") {
+            // First check the active set (normal revoke on current endpoint)
+            val activeOk = approvedOrigins.isApprovedSync(originIdentity(baseUrl))
+            // Then check the cleanup allowance (revoke on old endpoint)
+            val cleanupOk = cleanupStore?.isCleanupAllowedSync(originIdentity(baseUrl)) ?: false
+            if (!activeOk && !cleanupOk) {
+                throw BlockedRequest(
+                    "Insecure HTTP to '$baseUrl' is blocked. " +
+                        "This app enforces HTTPS by default. " +
+                        "If you control the server, use HTTPS. " +
+                        "For a development LAN server, enable the 'Allow insecure HTTP' option in Settings."
+                )
+            }
+        }
+
         return originIdentity(baseUrl)
     }
 }

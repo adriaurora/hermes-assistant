@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import dk.foss.jarvis.net.ApprovedOriginsStore
+import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmConnectionEffects
 import dk.foss.jarvis.push.FcmRevokeWorker
@@ -38,12 +40,26 @@ class SettingsStore internal constructor(
     private val secure: SecureStore,
     private val onConnectionChanged: suspend (JarvisSettings, JarvisSettings) -> Unit = { _, _ -> },
     private val withConnectionLock: suspend (suspend () -> Unit) -> Unit = { block -> block() },
+    /**
+     * Optional cleanup origins store.  When present, [moveForCleanup] and
+     * [revokeHttpOrigin] also clear the old origin from the cleanup allowance.
+     * In production this is an [AndroidApprovedOriginsStore] instance that
+     * shares the same DataStore file as this store.  In tests it is
+     * [InMemoryApprovedOriginsStore].
+     */
+    private val cleanupOriginsStore: ApprovedOriginsStore? = null,
 ) {
     /** Android entry point: app DataStore + Keystore-backed SecureStore. */
-    constructor(context: Context) : this(context.dataStore, SecureStore.get(context), { old, new ->
+    constructor(context: Context) : this(
+        store = context.dataStore,
+        secure = SecureStore.get(context),
+        onConnectionChanged = { old, new ->
             val app = context.applicationContext
             FcmConnectionEffects(PushPrefs(app), DeviceRegistryStore(app), { FcmRevokeWorker.schedule(app) }, { WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME) }).onConnectionChanged(old, new)
-        }, { block -> FcmLifecycle.withLock { block() } })
+        },
+        withConnectionLock = { block -> FcmLifecycle.withLock { block() } },
+        cleanupOriginsStore = AndroidApprovedOriginsStore(context),
+    )
 
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
@@ -59,6 +75,10 @@ class SettingsStore internal constructor(
         // Insecure HTTP origin approvals (per-endpoint, not per key).
         // Stored as a string-set for future multi-endpoint support, but only one is ever active.
         val APPROVED_HTTP_ORIGINS = stringSetPreferencesKey("approved_http_origins")
+        // Cleanup allowance: old endpoints pending a revoke worker.
+        // Stored separately from active approvals so that NetworkGate can
+        // check this scope exclusively for revoke operations.
+        val CLEANUP_HTTP_ORIGINS = stringSetPreferencesKey("cleanup_http_origins")
     }
 
     private val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -86,11 +106,30 @@ class SettingsStore internal constructor(
      * - ""    → clear the stored token;
      * - other → replace the stored token.
      * Any legacy plaintext key in DataStore is removed either way.
+     *
+     * If the new [baseUrl] is different from the old one and both use HTTP,
+     * the old origin is atomically moved to the cleanup allowance so that
+     * the revoke worker can still reach it — but ordinary traffic to the old
+     * endpoint is blocked immediately.
      */
     suspend fun updateConnection(baseUrl: String, apiKey: String?) {
         val normalized = baseUrl.trim().trimEnd('/')
         withConnectionLock {
             val old = settings.first()
+
+            // Atomic move: if we're changing from a different HTTP origin,
+            // move it to the cleanup allowance so that:
+            // - Ordinary traffic to the old origin is blocked immediately
+            // - The revoke worker can still reach it via cleanup scope
+            if (old.baseUrl != normalized && old.baseUrl.isNotBlank()) {
+                val oldOrigin = runCatching {
+                    dk.foss.jarvis.hermes.originIdentity(old.baseUrl.trim())
+                }.getOrNull()
+                oldOrigin?.let { origin ->
+                    cleanupOriginsStore?.moveForCleanup(origin)
+                }
+            }
+
             val newToken = when (apiKey) {
                 null -> old.apiKey
                 else -> apiKey.trim()
@@ -124,6 +163,14 @@ class SettingsStore internal constructor(
     }
 
     /**
+     * Returns the set of HTTP origins in the cleanup allowance.
+     * These are old endpoints that have been moved out of active approval
+     * while a revoke worker is pending.
+     */
+    val cleanupHttpOrigins: Flow<Set<String>> = cleanupOriginsStore?.cleanupOriginsFlow()
+        ?: kotlinx.coroutines.flow.emptyFlow()
+
+    /**
      * Approve an HTTP origin.  Idempotent and non-blocking.
      * The origin must be the normalised form (e.g. "http://10.0.0.1:8642").
      */
@@ -135,7 +182,8 @@ class SettingsStore internal constructor(
     }
 
     /**
-     * Revoke approval for an HTTP origin.  Idempotent.
+     * Revoke approval for an HTTP origin (active + cleanup).
+     * Used when the user manually removes an origin from both scopes.
      */
     suspend fun revokeHttpOrigin(origin: String) {
         store.edit { p ->
@@ -144,13 +192,39 @@ class SettingsStore internal constructor(
                 p[Keys.APPROVED_HTTP_ORIGINS] = current - origin
             }
         }
+        cleanupOriginsStore?.removeFromCleanup(origin)
     }
 
     /**
-     * Remove all HTTP origin approvals (used when credentials are cleared).
+     * Remove all HTTP origin approvals (active + cleanup).
+     * Used when credentials are cleared or when the user wants a full reset.
      */
     suspend fun clearAllHttpApprovals() {
         store.edit { p -> p.remove(Keys.APPROVED_HTTP_ORIGINS) }
+        cleanupOriginsStore?.let { store ->
+            store.clearAll()
+        }
+    }
+
+    /**
+     * Atomic transition: move [origin] from active approval to the cleanup
+     * allowance.  Called by [updateConnection] when the user switches to a
+     * different HTTP endpoint — the old origin must stop being reachable for
+     * ordinary traffic while the revoke worker is pending.
+     *
+     * Idempotent: if [origin] is not in active approval it is silently
+     * ignored.  If it's already in cleanup allowance nothing happens.
+     */
+    suspend fun moveForCleanup(origin: String) {
+        cleanupOriginsStore?.moveForCleanup(origin)
+    }
+
+    /**
+     * Remove an origin from the cleanup allowance.
+     * Used when the user manually forces cleanup revocation.
+     */
+    suspend fun removeFromCleanup(origin: String) {
+        cleanupOriginsStore?.removeFromCleanup(origin)
     }
 
     /** Remove the legacy plaintext key + keys from removed features. */

@@ -86,9 +86,17 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
         return call(RpcTokenBody(device_id = creds.first, device_secret = creds.second, push_token = token), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
     }
 
+    /**
+     * Revoke the FCM device registration.
+     *
+     * Uses the cleanup validation scope ([NetworkGate.validateForCleanup]) so
+     * that the revoke worker can still reach the old endpoint after the user
+     * has switched to a new one — the old origin was moved to the cleanup
+     * allowance atomically before this call is made.
+     */
     suspend fun revoke(): Result<Unit> {
         val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
-        return call(RpcRevokeBody(device_id = creds.first, device_secret = creds.second), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
+        return callForRevoke(RpcRevokeBody(device_id = creds.first, device_secret = creds.second), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
     }
 
     override suspend fun fetchEvent(id: String): Result<HermesEvent> {
@@ -134,6 +142,38 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
                 is RpcGetBody -> HermesJson.encodeToString(RpcGetBody.serializer(), body)
                 is RpcAckBody -> HermesJson.encodeToString(RpcAckBody.serializer(), body)
                 is RpcPendingBody -> HermesJson.encodeToString(RpcPendingBody.serializer(), body)
+                else -> error("unsupported RPC body")
+            }
+            val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $apiKey").addHeader("Content-Type", "application/json; charset=utf-8").post(encoded.toRequestBody(jsonMedia)).build()
+            Http.base.newCall(request).execute().use { response ->
+                if (response.code !in 200..299) throw HermesHttpException(response.code)
+                val envelope = HermesJson.decodeFromString(RpcEnvelope.serializer(), response.body?.string().orEmpty())
+                if (envelope.protocol_version != null && envelope.protocol_version != RPC_PROTOCOL_VERSION) throw RpcLogicError("unsupported_protocol", "protocol_version ${envelope.protocol_version}", null)
+                if (!envelope.ok) {
+                    val e = envelope.error
+                    throw if (e == null) RpcLogicError("invalid_response", null, null) else RpcLogicError(e.code, e.message, e.httpStatus)
+                }
+                val result = envelope.result
+                if (result == null || result is JsonNull) {
+                    @Suppress("UNCHECKED_CAST")
+                    if (acceptsNull) Unit as T else throw RpcLogicError("invalid_response", null, null)
+                } else HermesJson.decodeFromJsonElement(serializer, result)
+            }
+        }.recoverCatching { throw classify(it) }
+    }
+
+    /**
+     * Revoke-specific call path that validates using the cleanup allowance.
+     * Used by [revoke] so that the FCM revoke worker can reach the old
+     * endpoint after the user has switched to a new one.
+     */
+    private suspend fun <T> callForRevoke(body: Any, serializer: KSerializer<T>, acceptsNull: Boolean = false): Result<T> = withContext(Dispatchers.IO) {
+        runCatching {
+            val gate = resolveGate()
+            // Use cleanup scope validation for revoke operations.
+            gate.validateForCleanup(baseUrl)
+            val encoded = when (body) {
+                is RpcRevokeBody -> HermesJson.encodeToString(RpcRevokeBody.serializer(), body)
                 else -> error("unsupported RPC body")
             }
             val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $apiKey").addHeader("Content-Type", "application/json; charset=utf-8").post(encoded.toRequestBody(jsonMedia)).build()
