@@ -3,6 +3,8 @@ package dk.foss.jarvis.hermes
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.ConversationStore
 import dk.foss.jarvis.data.UiMessage
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import dk.foss.jarvis.ui.ModelSelection
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -29,7 +31,15 @@ class SessionsMockE2eTest {
     private val originA = MockWebServer()
     private val originB = MockWebServer()
 
-    @Before fun start() { originA.start(); originB.start() }
+    @Before fun start() {
+        originA.start(); originB.start()
+        // Approve both mock server origins in the test gate
+        val originAUrl = originA.url("/").toString().trimEnd('/')
+        val originBUrl = originB.url("/").toString().trimEnd('/')
+        val s = Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore
+        s.addSync(originIdentity(originAUrl))
+        s.addSync(originIdentity(originBUrl))
+    }
     @After fun stop() { originA.shutdown(); originB.shutdown() }
 
     private fun base(server: MockWebServer) = server.url("/").toString().trimEnd('/')

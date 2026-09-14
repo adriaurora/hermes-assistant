@@ -60,6 +60,11 @@ interface ApprovedOriginsStore {
 class InMemoryApprovedOriginsStore : ApprovedOriginsStore {
     private val set = mutableSetOf<String>()
 
+    // Synchronous access for tests
+    fun addSync(origin: String) { set.add(origin) }
+    fun contains(origin: String): Boolean = origin in set
+    fun clearAllSync() { set.clear() }
+
     override suspend fun list(): Set<String> = set.toSet()
     override suspend fun add(origin: String) { set.add(origin) }
     override suspend fun remove(origin: String) { set.remove(origin) }

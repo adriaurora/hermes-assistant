@@ -1,6 +1,9 @@
 package dk.foss.jarvis.hermes
 
 import dk.foss.jarvis.hermes.FetchFailureKind
+import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import dk.foss.jarvis.push.RpcErrorClass
 import dk.foss.jarvis.push.RpcRetryPolicy
 import okhttp3.mockwebserver.MockResponse
@@ -30,8 +33,12 @@ class EventRpcClientTest {
         server.shutdown()
     }
 
-    private fun client(apiKey: String = "KEY-XYZ", deviceId: String? = null, deviceSecret: String? = null): EventRpcClient =
-        EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
+    private fun client(apiKey: String = "KEY-XYZ", deviceId: String? = null, deviceSecret: String? = null): EventRpcClient {
+        // Approve the mock server origin in the test gate so the network gate doesn't block it.
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+        return EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
+    }
 
     // 1. register nuevo
     @Test fun `register nuevo responde success con 4 campos`() = runBlocking {

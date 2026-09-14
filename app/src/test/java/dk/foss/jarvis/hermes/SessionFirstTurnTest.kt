@@ -1,5 +1,7 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -21,7 +23,13 @@ class SessionFirstTurnTest {
     @get:org.junit.Rule val temporaryFolder = TemporaryFolder()
     private lateinit var server: MockWebServer
 
-    @Before fun setUp() { server = MockWebServer(); server.start() }
+    @Before fun setUp() {
+        server = MockWebServer()
+        server.start()
+        // Approve the mock server origin in the test gate
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+    }
     @After fun tearDown() { server.shutdown() }
     private fun client() = HermesClient(server.url("/").toString().trimEnd('/'), "test-key")
     private fun response(id: String) = MockResponse().setResponseCode(201).setBody("{\"session\":{\"id\":\"$id\"}}")

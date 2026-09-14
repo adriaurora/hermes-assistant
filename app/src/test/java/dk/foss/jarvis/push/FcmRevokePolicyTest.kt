@@ -1,8 +1,12 @@
 package dk.foss.jarvis.push
 
 import dk.foss.jarvis.hermes.EventFetchException
+import dk.foss.jarvis.hermes.EventRpcClient
 import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesHttpException
+import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -147,11 +151,15 @@ class FcmRevokePolicyTest {
 
     private val server = MockWebServer()
 
-    @Before fun setUp() { server.start() }
+    @Before fun setUp() {
+        server.start()
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+    }
     @After fun tearDown() { server.shutdown() }
 
     private fun client(apiKey: String = "KEY", deviceId: String = "d-1", deviceSecret: String = "s-1") =
-        dk.foss.jarvis.hermes.EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
+        EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
 
     @Test fun `integration revoke 200 success classify null is RevokeSuccess`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200)
