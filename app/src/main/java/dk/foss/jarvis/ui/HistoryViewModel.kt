@@ -173,7 +173,16 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                     repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs, origin = origin, transport = transport)
                     onReady()
                 },
-                onFailure = { err: Throwable -> notice.value = "Could not load session: ${err.message?.take(120)}" },
+                onFailure = { err: Throwable ->
+                    // Network and protocol failures are useful in diagnostics, but are not
+                    // product-facing text (they may contain socket/HTTP implementation details).
+                    E2eLog.log("historyImportFailed type=${err::class.java.simpleName}")
+                    notice.value = when ((err as? HermesHttpError)?.code) {
+                        401, 403 -> "Authentication failed while loading this session."
+                        404 -> "This session no longer exists in Hermes."
+                        else -> "Could not load this session. Try again later."
+                    }
+                },
             )
         }
     }
