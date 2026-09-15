@@ -53,7 +53,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var currentSource: EventSource? = null
     private var activeTurnJob: kotlinx.coroutines.Job? = null
     private var turnInFlight = false
+    private var streamGeneration = 0
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    init {
+        // Restore the app-scoped active conversation after process recreation.
+        viewModelScope.launch { repo.restoreLatest() }
+    }
 
     /** Check selectorAvailable: model_options && session_model_lock. */
     val modelSelectorAvailable get() = modelSelection.state.selectorAvailable
@@ -267,8 +273,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun newConversation() {
         cancel()
         viewModelScope.launch {
-            repo.persist()
-            repo.startNew()
+            repo.startNewAtomically()
         }
         modelSelection.reset()
         modelLabel.value = "Automatic"
@@ -278,6 +283,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancel() {
+        streamGeneration++
         currentSource?.cancel()
         currentSource = null
         activeTurnJob?.cancel()
@@ -382,21 +388,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun sendSessionStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
+        val generation = streamGeneration
         currentSource = client.streamSessionTurn(sid, userText, object : HermesClient.StreamCallbacks {
             override fun onDelta(textDelta: String) = onMain {
+                if (generation != streamGeneration) return@onMain
                 repo.appendToMessage(assistantIndex, textDelta)
             }
 
             override fun onFinalContent(text: String) = onMain {
+                if (generation != streamGeneration) return@onMain
                 // Idempotent replacement — ensures no duplication
                 repo.replaceMessage(assistantIndex, text)
             }
 
             override fun onToolProgress(tool: String, label: String?, running: Boolean) = onMain {
+                if (generation != streamGeneration) return@onMain
                 activity.value = if (running) (label ?: tool) else null
             }
 
             override fun onRuntime(info: RuntimeInfo) = onMain {
+                if (generation != streamGeneration) return@onMain
                 effectiveRoute.value = EffectiveRoute.fromRuntime(info)
                 if (info.model_lock == "accepted") {
                     modelSelection.onSetAck(info.model ?: "Automatic", info)
@@ -405,6 +416,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             override fun onComplete() = onMain {
+                if (generation != streamGeneration) return@onMain
                 isStreaming.value = false
                 currentSource = null
                 activity.value = null
@@ -414,18 +426,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            override fun onError(message: String) = onMain {
-                val cleanMsg = message.replace("^HTTP \\d+: ?".toRegex(), "")
-                if (message.contains("401") || message.contains("403") || message.contains("gateway_auth_failed")) {
-                    val errMsg = "Authentication failed (${cleanMsg.take(40)}). Check the API key in Settings."
+            override fun onError(streamError: Throwable) = onMain {
+                if (generation != streamGeneration) return@onMain
+                val errMsg = semanticChatError(streamError)
+                if (errMsg.isBlank()) return@onMain
+                if ((streamError as? HermesHttpError)?.isAuth == true) {
                     val cur = messages.getOrNull(assistantIndex)
                     if (cur != null && cur.text.isEmpty()) {
                         repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
                     } else {
                         repo.addMessage("assistant", "⚠️ $errMsg", isError = true)
                     }
-                } else if (message.contains("404") || message.contains("session_not_found") || message.contains("no longer exists")) {
-                    val errMsg = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                } else if ((streamError as? HermesHttpError)?.isSessionMissing == true) {
                     sendBlocked.value = errMsg
                     val cur = messages.getOrNull(assistantIndex)
                     if (cur != null && cur.text.isEmpty()) {
@@ -436,9 +448,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     val cur = messages.getOrNull(assistantIndex)
                     if (cur != null && cur.text.isEmpty()) {
-                        repo.replaceMessage(assistantIndex, "⚠️ $cleanMsg", isError = true)
+                        repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
                     } else {
-                        repo.addMessage("assistant", "⚠️ $cleanMsg", isError = true)
+                        repo.addMessage("assistant", "⚠️ $errMsg", isError = true)
                     }
                 }
                 isStreaming.value = false
@@ -469,17 +481,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 },
                 onFailure = {
-                    val msg = it.message?.take(120) ?: "Session turn failed"
                     val hermesErr = it as? HermesHttpError
                     if (hermesErr?.isSessionMissing == true) {
                         val errMsg = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
                         sendBlocked.value = errMsg
                         repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
                     } else if (hermesErr?.isAuth == true) {
-                        val errMsg = "Authentication failed (401/403). Check the API key in Settings."
+                        val errMsg = semanticChatError(it)
                         repo.replaceMessage(assistantIndex, "⚠️ $errMsg", isError = true)
                     } else {
-                        repo.replaceMessage(assistantIndex, "⚠️ $msg", isError = true)
+                        repo.replaceMessage(assistantIndex, "⚠️ ${semanticChatError(it)}", isError = true)
                     }
                     isStreaming.value = false
                     activity.value = null

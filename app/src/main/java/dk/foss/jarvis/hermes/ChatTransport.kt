@@ -24,6 +24,22 @@ data class HermesHttpError(val code: Int?, val rpcCode: String?, val rawBody: St
     val isSessionMissing: Boolean get() = code == 404 && (rpcCode == "session_not_found" || rawBody?.contains("session_not_found") == true)
 }
 
+/** Stable product wording for transport failures; never expose exception text to UI. */
+fun semanticChatError(error: Throwable): String {
+    val http = error as? HermesHttpError
+    return when {
+        error is StreamClosedBeforeTerminalError ->
+            "Response stream ended before completion. Open the conversation to reconcile its latest server history."
+        http?.isAuth == true -> "Authentication failed. Check the API key in Settings."
+        http?.isSessionMissing == true || http?.rpcCode == "session_not_found" ->
+            "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+        http?.code in 408..499 -> "Hermes rejected the request. Check the conversation and try again."
+        http?.code in 500..599 -> "Hermes is temporarily unavailable. Try again later."
+        error is java.util.concurrent.CancellationException -> ""
+        else -> "Couldn't reach Hermes. Check the connection and try again."
+    }
+}
+
 fun parseErrorBody(body: String): Pair<String?, String?> = runCatching {
     val obj = HermesJson.parseToJsonElement(body).jsonObject
     val error = obj["error"]

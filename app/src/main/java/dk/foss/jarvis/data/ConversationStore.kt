@@ -22,17 +22,15 @@ class ConversationStore {
     }
 
     suspend fun save(conversation: Conversation) = withContext(Dispatchers.IO) {
-        runCatching {
-            // Write to a temp file then atomically rename, so concurrent/torn writes
-            // can't corrupt the JSON.
-            val target = File(dir, "${conversation.id}.json")
-            val tmp = File(dir, "${conversation.id}.json.tmp")
-            tmp.writeText(json.encodeToString(Conversation.serializer(), conversation))
-            if (!tmp.renameTo(target)) {
-                target.writeText(tmp.readText()); tmp.delete()
-            }
+        // Write to a temp file then atomically rename, so concurrent/torn writes
+        // can't corrupt the JSON. Do not catch failures: callers must retain dirty
+        // state and surface a persistence failure rather than claiming success.
+        val target = File(dir, "${conversation.id}.json")
+        val tmp = File(dir, "${conversation.id}.json.tmp")
+        tmp.writeText(json.encodeToString(Conversation.serializer(), conversation))
+        if (!tmp.renameTo(target)) {
+            target.writeText(tmp.readText()); tmp.delete()
         }
-        Unit
     }
 
     suspend fun load(id: String): Conversation? = withContext(Dispatchers.IO) {
@@ -42,18 +40,16 @@ class ConversationStore {
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        runCatching { File(dir, "$id.json").delete() }
-        Unit
+        val file = File(dir, "$id.json")
+        if (file.exists() && !file.delete()) error("Unable to delete conversation")
     }
 
     /** All conversations as lightweight metadata, newest first. */
     suspend fun list(): List<ConversationMeta> = withContext(Dispatchers.IO) {
         (dir.listFiles { f -> f.extension == "json" } ?: emptyArray())
             .mapNotNull { f ->
-                runCatching {
-                    val c = decodeConversation(f.readText()) ?: return@runCatching null
+                    val c = decodeConversation(f.readText()) ?: return@mapNotNull null
                     ConversationMeta(c.id, c.title, c.updatedAt, c.messages.size, c.sessionId, c.transport, c.origin)
-                }.getOrNull()
             }
             .sortedByDescending { it.updatedAt }
     }
@@ -63,8 +59,8 @@ class ConversationStore {
         load(id)?.let { save(it.copy(origin = newOrigin, updatedAt = System.currentTimeMillis())) }
     }
 
-    private fun decodeConversation(raw: String): Conversation? = runCatching {
-        try { json.decodeFromString(Conversation.serializer(), raw) }
+    private fun decodeConversation(raw: String): Conversation? {
+        return try { json.decodeFromString(Conversation.serializer(), raw) }
         catch (_: Exception) {
             val obj = Json.decodeFromString(JsonObject.serializer(), raw).toMutableMap()
             val stored = obj["transport"]?.jsonPrimitive?.content
@@ -72,5 +68,5 @@ class ConversationStore {
             obj.remove("transport")
             json.decodeFromString(Conversation.serializer(), JsonObject(obj).toString())
         }
-    }.getOrNull()
+    }
 }

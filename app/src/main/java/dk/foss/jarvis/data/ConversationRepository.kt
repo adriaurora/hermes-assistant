@@ -12,6 +12,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import dk.foss.jarvis.net.E2eLog
 
@@ -46,6 +48,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
     // App-lifetime scope so a fire-and-forget save survives a ViewModel being cleared
     // (viewModelScope is cancelled BEFORE onCleared runs, which would drop the last save).
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleMutex = Mutex()
 
     val messages: SnapshotStateList<UiMessage> = mutableStateListOf()
 
@@ -78,7 +81,29 @@ class ConversationRepository internal constructor(private val store: Conversatio
         switched()
     }
 
+    /** Persist then replace the active conversation as one serialized lifecycle transition. */
+    suspend fun startNewAtomically() = lifecycleMutex.withLock {
+        persistLocked()
+        startNew()
+    }
+
     suspend fun open(id: String) {
+        lifecycleMutex.withLock {
+            if (id != activeId) persistLocked()
+            openLocked(id)
+        }
+    }
+
+    /** Restore the most recently updated saved conversation on process recreation. */
+    suspend fun restoreLatest() {
+        lifecycleMutex.withLock {
+            if (messages.isNotEmpty()) return
+            val latest = store.list().firstOrNull() ?: return
+            openLocked(latest.id)
+        }
+    }
+
+    private suspend fun openLocked(id: String) {
         val c = store.load(id) ?: return
         activeId = c.id
         title = c.title
@@ -195,6 +220,10 @@ class ConversationRepository internal constructor(private val store: Conversatio
         messages.filter { !it.isError }.map { ChatMessage(it.role, it.text) }
 
     suspend fun persist() {
+        lifecycleMutex.withLock { persistLocked() }
+    }
+
+    private suspend fun persistLocked() {
         if (!dirty) return
         if (messages.none { !it.isError }) return
         store.save(
@@ -210,6 +239,8 @@ class ConversationRepository internal constructor(private val store: Conversatio
                 lastUsedAt = lastUsedAt,
             ),
         )
+        // Only clear after store.save has returned successfully. A failed write
+        // deliberately leaves the repository dirty for a later retry.
         dirty = false
     }
 

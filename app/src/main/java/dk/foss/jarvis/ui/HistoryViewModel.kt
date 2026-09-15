@@ -97,8 +97,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     /** Persist the current conversation, load the chosen one, then continue. */
     fun open(id: String, onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.open(id)
+            repo.open(id) // serializes with any pending save and replaces active state atomically
             E2eLog.log("historyOpen id=${repo.activeConversationId} transport=${repo.transport} sessionId=${repo.sessionId}")
             // If this is a SESSIONS conversation bound to the current server,
             // try to refresh messages from the server (authoritative copy).
@@ -189,8 +188,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startNew(onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.startNew()
+            repo.startNewAtomically()
             onReady()
         }
     }

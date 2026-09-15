@@ -70,12 +70,21 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { ensureReady() }
     }
 
-    private suspend fun ensureReady() {
-        val s = settings ?: settingsStore.settings.first().also { settings = it }
-        if (tts == null) tts = AndroidTts(getApplication(), languageTag = null)
-        if (recognizer == null) {
-            recognizer = SpeechInput(getApplication())
-            recognizer?.prewarm()
+    private suspend fun ensureReady(): Boolean {
+        return try {
+            settings ?: settingsStore.settings.first().also { settings = it }
+            if (tts == null) tts = AndroidTts(getApplication(), languageTag = null)
+            if (recognizer == null) {
+                recognizer = SpeechInput(getApplication())
+                recognizer?.prewarm()
+            }
+            true
+        } catch (t: Throwable) {
+            // Speech providers are optional and several OEMs throw while they
+            // bind. Keep the voice screen usable and expose a semantic error.
+            error.value = "Voice input unavailable. Check microphone permissions and speech services."
+            state.value = ConvState.Idle
+            false
         }
     }
 
@@ -84,7 +93,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         continuous = true
         retriedThisTurn = false
         viewModelScope.launch {
-            ensureReady()
+            if (!ensureReady()) return@launch
             if (settings?.isConfigured != true) {
                 error.value = "Configure Hermes in Settings first."
                 state.value = ConvState.Idle
@@ -309,11 +318,13 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 stalled.value = false
                 toolLabel.value = null
                 if (hermesErr?.isSessionMissing == true) {
-                    error.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                    error.value = semanticChatError(streamError)
                 } else if (hermesErr?.isAuth == true) {
-                    error.value = "Authentication failed (401/403). Check the API key in Settings."
+                    error.value = semanticChatError(streamError)
                 } else {
-                    error.value = streamError.message ?: "Stream failed"
+                    val message = semanticChatError(streamError)
+                    if (message.isBlank()) return@onMain
+                    error.value = message
                 }
                 goIdle()
             }
@@ -345,11 +356,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 onFailure = {
                     val hermesErr = it as? HermesHttpError
                     if (hermesErr?.isSessionMissing == true) {
-                        error.value = "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+                        error.value = semanticChatError(it)
                     } else if (hermesErr?.isAuth == true) {
-                        error.value = "Authentication failed (401/403). Check the API key in Settings."
+                        error.value = semanticChatError(it)
                     } else {
-                        error.value = it.message?.take(120) ?: "Session turn failed"
+                        error.value = semanticChatError(it)
                     }
                     goIdle()
                 }
