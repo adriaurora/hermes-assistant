@@ -3,7 +3,8 @@ package dk.foss.jarvis.push
 import android.content.Context
 import androidx.work.*
 import dk.foss.jarvis.data.*
-import dk.foss.jarvis.hermes.*
+import dk.foss.jarvis.hermes.EventRpcClient
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import kotlinx.coroutines.flow.first
 import java.time.Duration
 
@@ -18,6 +19,23 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
             val uri = java.net.URI.create(url.trim())
             uri.scheme?.lowercase() == "http"
         }.getOrDefault(false)
+
+        /**
+         * Derive the canonical cleanup key from a raw `hermesOrigin` string.
+         *
+         * Only HTTP origins are normalised; HTTPS returns `null`.  Malformed
+         * URLs produce `null` without throwing — the caller must not attempt
+         * cleanup when the result is `null`.
+         *
+         * This is the **only** place that derives the cleanup key, ensuring
+         * the worker and tests use the identical normalisation.
+         */
+        @JvmStatic
+        internal fun canonicalHttpCleanupOrigin(raw: String): String? = runCatching {
+            if (raw.isNotBlank() && isHttpOrigin(raw)) {
+                canonicalEndpointIdentity(raw)
+            } else null
+        }.getOrNull()
 
         fun schedule(c: Context) {
             val request = OneTimeWorkRequestBuilder<FcmRevokeWorker>()
@@ -51,9 +69,7 @@ class FcmRevokeWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 // Capture the old origin BEFORE the revoke call so we can
                 // remove its HTTP approval after successful revoke.
                 // Only clear HTTP approval — HTTPS needs none.
-                val oldOriginHttp = if (r.hermesOrigin.isNotBlank() && isHttpOrigin(r.hermesOrigin)) {
-                    r.hermesOrigin
-                } else null
+                val oldOriginHttp = canonicalHttpCleanupOrigin(r.hermesOrigin)
                 val revokeResult = EventRpcClient(r.hermesOrigin, r.apiKey, r.deviceId, r.deviceSecret).revoke()
                 val error = revokeResult.exceptionOrNull()
                 // When the old origin was manually revoked before the worker ran,
