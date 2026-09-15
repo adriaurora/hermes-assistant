@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dk.foss.jarvis.BuildConfig
+import dk.foss.jarvis.data.ConnectionErrorMapper
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.HermesClient
 import dk.foss.jarvis.hermes.canonicalEndpointIdentity
@@ -294,35 +295,42 @@ fun SettingsScreen(onBack: () -> Unit) {
                 )
 
                 // ── Save & test ───────────────────────────────────────────
-                HelmFlatButton(
-                    text   = "Save & test connection",
-                    onClick = {
-                        if (isHttp && !isHttpApproved) {
-                            // Open blocking dialog — user must consent first
-                            dialogCheckboxChecked = false
-                            showHttpApprovalDialog = true
-                        } else {
-                            scope.launch {
-                                persist()
-                                testing = true
-                                status = "Testing\u2026"
-                                val s = store.settings.first()
-                                val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
-                                testing = false
-                                status = result.fold(
-                                    onSuccess = { ids ->
-                                        "\u2713 Connected. ${ids.size} model(s)" +
-                                            if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
-                                    },
-                                    onFailure = { "\u2717 ${it.message}" },
-                                )
-                            }
-                        }
-                    },
-                    accent = true,
-                    enabled = loaded && !testing && baseUrl.isNotBlank() &&
-                        (apiKey.isNotBlank() || savedKey),
-                )
+    HelmFlatButton(
+        text   = "Save & test connection",
+        onClick = {
+            if (isHttp && !isHttpApproved) {
+                // Open blocking dialog — user must consent first
+                dialogCheckboxChecked = false
+                showHttpApprovalDialog = true
+            } else {
+                scope.launch {
+                    val saveResult = runCatching { persist() }
+                    testing = true
+                    status = "Testing\u2026"
+                    if (saveResult.isFailure) {
+                        testing = false
+                        status = saveResult.exceptionOrNull()?.let {
+                            ConnectionErrorMapper.mapSaveError(it)
+                        } ?: "\u2717 Error desconocido."
+                        return@launch
+                    }
+                    val s = store.settings.first()
+                    val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
+                    testing = false
+                    status = result.fold(
+                        onSuccess = { ids ->
+                            "\u2713 Connected. ${ids.size} model(s)" +
+                                if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
+                        },
+                        onFailure = { e -> ConnectionErrorMapper.mapTestConnectionError(e) },
+                    )
+                }
+            }
+        },
+        accent = true,
+        enabled = loaded && !testing && baseUrl.isNotBlank() &&
+            (apiKey.isNotBlank() || savedKey),
+    )
 
                 if (testing) {
                     CircularProgressIndicator(
@@ -542,23 +550,36 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     // Chain: approve → persist → test all in same coroutine
                                     currentHttpOrigin?.let { origin ->
                                         scope.launch {
-                                            store.approveHttpOrigin(origin)
-                                            approvedOrigins = store.approvedHttpOrigins.first()
-                                            cleanupOrigins = store.cleanupHttpOrigins.first()
-                                            showHttpApprovalDialog = false
-                                            persist()
-                                            testing = true
-                                            status = "Testing\u2026"
-                                            val s = store.settings.first()
-                                            val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
-                                            testing = false
-                                            status = result.fold(
-                                                onSuccess = { ids ->
-                                                    "\u2713 Connected. ${ids.size} model(s)" +
-                                                        if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
-                                                },
-                                                onFailure = { "\u2717 ${it.message}" },
-                                            )
+                                            try {
+                                                store.approveHttpOrigin(origin)
+                                                approvedOrigins = store.approvedHttpOrigins.first()
+                                                cleanupOrigins = store.cleanupHttpOrigins.first()
+                                                showHttpApprovalDialog = false
+                                                val saveResult = runCatching { persist() }
+                                                if (saveResult.isFailure) {
+                                                    testing = false
+                                                    status = saveResult.exceptionOrNull()?.let {
+                                                        ConnectionErrorMapper.mapSaveError(it)
+                                                    } ?: "\u2717 Error desconocido."
+                                                    return@launch
+                                                }
+                                                testing = true
+                                                status = "Testing\u2026"
+                                                val s = store.settings.first()
+                                                val result = HermesClient(s.baseUrl, s.apiKey).testConnection()
+                                                testing = false
+                                                status = result.fold(
+                                                    onSuccess = { ids ->
+                                                        "\u2713 Connected. ${ids.size} model(s)" +
+                                                            if (ids.isNotEmpty()) ": ${ids.take(5).joinToString()}" else ""
+                                                    },
+                                                    onFailure = { e -> ConnectionErrorMapper.mapTestConnectionError(e) },
+                                                )
+                                            } catch (e: Throwable) {
+                                                testing = false
+                                                status = ConnectionErrorMapper.mapSaveError(e)
+                                                showHttpApprovalDialog = false
+                                            }
                                         }
                                     }
                                 },
