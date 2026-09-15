@@ -23,14 +23,18 @@ import java.util.concurrent.TimeUnit
  * by default — the app gate then acts as the policy boundary.
  */
 object Http {
-    /** General-purpose client with bounded timeouts. */
+    /** General-purpose client with bounded timeouts. No redirects — the gate
+     * enforces a fail-closed policy and callers must validate before building
+     * requests.  SSE streams inherit this via [streaming]. */
     val base: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
-    /** For long-lived SSE streams (no read timeout); shares base's pools. */
+    /** For long-lived SSE streams (no read timeout); inherits redirect settings from [base]. */
     val streaming: OkHttpClient = base.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()

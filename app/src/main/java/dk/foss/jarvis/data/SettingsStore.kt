@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import dk.foss.jarvis.hermes.originIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmConnectionEffects
@@ -129,13 +130,17 @@ class SettingsStore internal constructor(
                 p.remove(Keys.MODEL)
 
                 // Atomic cleanup of old HTTP origin in the same edit.
-                if (old.baseUrl != normalized && old.baseUrl.isNotBlank()) {
-                    val oldOrigin = runCatching {
-                        dk.foss.jarvis.hermes.originIdentity(old.baseUrl.trim())
-                    }.getOrNull()
-                    oldOrigin?.let { origin ->
-                        val currentApproved = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet<String>()
-                        val currentCleanup = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet<String>()
+                // Compare canonical identities so that URL-equivalent forms
+                // (default port folding, trailing slash, case) do NOT trigger
+                // a cleanup move.  Only real host/port/path/scheme changes do.
+                val newOrigin = runCatching { originIdentity(normalized) }.getOrNull()
+                val oldOrigin = runCatching {
+                    originIdentity(old.baseUrl.trim())
+                }.getOrNull()
+                if (oldOrigin != null && newOrigin != null && oldOrigin != newOrigin && old.baseUrl.isNotBlank()) {
+                    oldOrigin.let { origin ->
+                        val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
+                        val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
                         if (origin in currentApproved) {
                             p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - origin
                             p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + origin

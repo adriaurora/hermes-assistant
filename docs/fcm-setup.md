@@ -89,8 +89,8 @@ Install and enable the `hermes_assistant` plugin on the same Hermes `api_server`
 configured in Settings.
 
 **Hermes agent**: [adriaurora/hermes-agent](https://github.com/adriaurora/hermes-agent)
-- Branch: `feature/platform-api-server-key-auth`
-- SHA: `1f517576c1beccc00562af91aa2cf73f1b48bdf7`
+- Branch: `api-server-enforce-key`
+- SHA: `c45d18265cdb3de00599cf80548dd34187fc750f`
 
 **Hermes assistant plugin**: [adriaurora/hermes-assistant-plugin](https://github.com/adriaurora/hermes-assistant-plugin)
 - SHA: `c93c3ce40221773d512fcf7d41222795a5abed98`

@@ -5,7 +5,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import dk.foss.jarvis.net.E2eLog
 
@@ -75,10 +74,11 @@ object ChatTransportSelector {
 /**
  * Canonical connection identity for conversation binding and origin isolation.
  *
- * Builds a stable hash from the full base URL (scheme + host lowercased, default port folded,
- * path preserved, no trailing slash) combined with a short non-reversible fingerprint of the API key
- * (full 64-hex SHA-256). If [apiKey] is null or blank only the URL forms the identity —
- * documented so callers know conversations on the same host but different keys stay distinct.
+ * Builds a stable hash from the full base URL only: scheme + host lowercased,
+ * default port folded, path preserved, no trailing slash.  **No API key** is
+ * included — the identity is purely URL-based so that API key rotation does
+ * not break conversation continuity on the same endpoint.  If callers need
+ * per-key isolation they must append their own discriminator.
  */
 fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatching {
     val uri = URI(baseUrl.trim().trimEnd('/'))
@@ -87,12 +87,5 @@ fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatchin
     val defaultPort = if (scheme == "http") 80 else if (scheme == "https") 443 else -1
     val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
     val path = uri.path.ifEmpty { "/" }
-    val urlPart = "$scheme://$host$port$path"
-    val keyHash = apiKey?.let { key ->
-        if (key.isBlank()) return@let null
-        val md = MessageDigest.getInstance("SHA-256")
-        md.update(key.toByteArray(Charsets.UTF_8))
-        md.digest().joinToString("") { "%02x".format(it) }
-    }
-    if (keyHash != null) "$urlPart-$keyHash" else urlPart
+    "$scheme://$host$port$path"
 }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }

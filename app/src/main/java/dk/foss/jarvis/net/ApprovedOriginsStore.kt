@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.preferencesDataStoreFile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -179,12 +180,18 @@ class AndroidApprovedOriginsStore(
          */
         @Volatile private var _instance: DataStore<Preferences>? = null
 
-        /** Returns the shared singleton DataStore for `jarvis_settings`. */
+/**
+         * Returns the shared singleton DataStore for `jarvis_settings`.
+         * Uses the AndroidX `preferencesDataStoreFile` canonical path so that
+         * SettingsStore and AndroidApprovedOriginsStore share exactly the same
+         * underlying file — no race, no double-write.
+         */
         @Synchronized
         fun dataStorePreferences(context: Context): DataStore<Preferences> {
             _instance?.let { return it }
+            val appCtx = context.applicationContext
             return PreferenceDataStoreFactory.create(
-                produceFile = { File(context.applicationContext.filesDir, "jarvis_settings.preferences_pb") }
+                produceFile = { appCtx.preferencesDataStoreFile("jarvis_settings") }
             ).also { _instance = it }
         }
 
