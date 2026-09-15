@@ -159,10 +159,19 @@ class InMemoryApprovedOriginsStore : ApprovedOriginsStore {
  * cleanup (`cleanup_http_origins`) keys live in the same DataStore so that
  * [moveForCleanup] is a single atomic edit — no nested DataStore read/edit.
  *
- * The synchronous check falls back to the suspending version because
- * DataStore access is inherently asynchronous.  Production code always
- * uses the suspending [isApproved] through the gate's [validate] path,
- * which is called from inside a suspending coroutine context.
+ * ## Synchronous checks
+ *
+ * The synchronous check methods ([isApprovedSync], [isCleanupAllowedSync])
+ * are called from [NetworkGate.validate()] — a non-suspending function that
+ * may be invoked from any background thread (e.g. OkHttp callbacks in
+ * [dk.foss.jarvis.hermes.HermesClient.streamSessionTurn]).
+ *
+ * In production all callers are inside [kotlinx.coroutines.Dispatchers.IO]
+ * coroutines (see [dk.foss.jarvis.hermes.HermesClient] methods), so
+ * [runBlocking] here does **not** create a new coroutine — it just
+ * synchronises within the existing IO thread.  This keeps the public API
+ * non-suspending while still avoiding blocking a dedicated thread for the
+ * DataStore read.
  *
  * @param store The single DataStore instance.  For production use, prefer
  *   the [Context] constructor which creates a shared singleton instance
@@ -180,7 +189,7 @@ class AndroidApprovedOriginsStore(
          */
         @Volatile private var _instance: DataStore<Preferences>? = null
 
-/**
+        /**
          * Returns the shared singleton DataStore for `jarvis_settings`.
          * Uses the AndroidX `preferencesDataStoreFile` canonical path so that
          * SettingsStore and AndroidApprovedOriginsStore share exactly the same
@@ -266,24 +275,31 @@ class AndroidApprovedOriginsStore(
         return origin in store.data.map { it[CLEANUP_KEY] ?: emptySet() }.first()
     }
 
-    override fun isCleanupAllowedSync(origin: String): Boolean {
+    override suspend fun isApproved(origin: String): Boolean = origin in list()
+
+    /**
+     * Synchronous check.  Uses [runBlocking] to synchronously read from
+     * the DataStore.  In production callers are inside [Dispatchers.IO]
+     * coroutines so no new coroutine is created — just a suspend-point
+     * synchronisation.
+     *
+     * @see [isCleanupAllowedSync]
+     */
+    override fun isApprovedSync(origin: String): Boolean {
         return try {
-            runBlocking { store.data.map { it[CLEANUP_KEY] ?: emptySet() }.first() }.contains(origin)
+            origin in runBlocking { list() }
         } catch (_: Exception) {
             false
         }
     }
 
-    override suspend fun isApproved(origin: String): Boolean = origin in list()
-
     /**
-     * Synchronous check: uses runBlocking because the gate's validate() is
-     * called from inside a suspending coroutine (all callers are suspend),
-     * so we can safely synchronise DataStore reads.
+     * Synchronous check for cleanup allowance.  Same strategy as
+     * [isApprovedSync].
      */
-    override fun isApprovedSync(origin: String): Boolean {
+    override fun isCleanupAllowedSync(origin: String): Boolean {
         return try {
-            runBlocking { list() }.contains(origin)
+            origin in runBlocking { store.data.map { it[CLEANUP_KEY] ?: emptySet() }.first() }
         } catch (_: Exception) {
             false
         }
