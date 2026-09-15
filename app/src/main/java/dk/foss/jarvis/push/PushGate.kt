@@ -17,6 +17,7 @@ data class PushDeps(
     val onDelivered: suspend (String) -> Unit = {},
     val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
     val onDeliveryRejected: suspend (String) -> Unit = {},
+    val onReserved: suspend (String) -> Unit = {},
     val notify: (HermesEventEnvelope, Int) -> DeliveryOutcome,
 )
 
@@ -56,7 +57,7 @@ class PushGate(private val deps: PushDeps) {
         // Persist the delivered marker before posting.  This is intentional:
         // a process death between notify() and persistence must never produce
         // a second user-visible notification.  ACK is retried independently.
-        deps.onDelivered(eventId)
+        deps.onReserved(eventId)
         val delivery = deps.notify(envelope, StableNotificationId.forEvent(eventId))
         if (delivery != DeliveryOutcome.SUCCESS) {
             // Permission denial/post failure is recoverable. It must not ACK,
@@ -65,6 +66,7 @@ class PushGate(private val deps: PushDeps) {
             deps.deduper.forget(eventId)
             return if (delivery == DeliveryOutcome.PERMISSION_DENIED) GateOutcome.PERMISSION_DENIED else GateOutcome.DELIVERY_FAILURE
         }
+        deps.onDelivered(eventId)
         return if (deps.client.ack(eventId).isSuccess) GateOutcome.NOTIFIED
         else { deps.deduper.markAckPending(eventId); GateOutcome.ACK_FAILURE }
     }

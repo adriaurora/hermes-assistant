@@ -3,7 +3,6 @@ package dk.foss.jarvis.receivers
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import dk.foss.jarvis.MainActivity
 import android.util.Log
 import dk.foss.jarvis.data.DeviceRegistryStore
 import dk.foss.jarvis.data.SettingsStore
@@ -58,8 +57,9 @@ object PushIngress {
         val client = rpcClient(settings, device)
         val gate = PushGate(PushDeps(settings.isConfigured, device.deviceId, client, deduper,
             wasDelivered = { prefs.wasDelivered(it) },
-            onDelivered = { prefs.recordDelivered(it) },
-            onDeliveryRejected = { prefs.forgetDelivered(it) }, notify = { envelope, id ->
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            onDeliveryRejected = { prefs.clearReserved(it) }, notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) DeliveryOutcome.PERMISSION_DENIED
             else runCatching { postReminderNotification(context, envelope, id) }
                 .fold({ DeliveryOutcome.SUCCESS }, { DeliveryOutcome.POST_FAILURE })
@@ -81,11 +81,13 @@ object PushIngress {
         val client = rpcClient(settings, device)
         val dispatcher = EventDispatcher(client, deduper,
             wasDelivered = { prefs.wasDelivered(it) },
-            onDelivered = { prefs.recordDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            expectedDeviceId = device.deviceId,
             notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
             postReminderNotification(context, envelope, id); delivered++
-        }, onDeliveryRejected = { prefs.forgetDelivered(it) })
+        }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
     }
 
@@ -101,11 +103,13 @@ object PushIngress {
         val client = rpcClient(settings, device)
         val dispatcher = EventDispatcher(client, deduper,
             wasDelivered = { prefs.wasDelivered(it) },
-            onDelivered = { prefs.recordDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            expectedDeviceId = device.deviceId,
             notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
             postReminderNotification(context, envelope, id)
-        }, onDeliveryRejected = { prefs.forgetDelivered(it) })
+        }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync()
     }
 
@@ -180,13 +184,11 @@ object PushIngress {
     }
 
     suspend fun fromNotificationIntent(context: Context, intent: Intent): Boolean {
-        val eventId = intent.getStringExtra("event_id") ?: return false
-        if (!intent.getBooleanExtra("from_notification", false)) return false
-        context.startActivity(Intent(context, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            putExtras(intent)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        })
-        return eventId.isNotBlank()
+        // Legacy callers cannot route arbitrary extras. Only the one-shot
+        // capability issued by postReminderNotification is accepted.
+        if (intent.action != dk.foss.jarvis.notifications.HERMES_NOTIFICATION_TAP ||
+            intent.`package` != context.packageName) return false
+        val token = intent.getStringExtra("tap_token") ?: return false
+        return dk.foss.jarvis.notifications.NotificationTapStore.consume(context, token) != null
     }
 }

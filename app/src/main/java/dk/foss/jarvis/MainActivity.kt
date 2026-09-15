@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -15,6 +16,9 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import dk.foss.jarvis.receivers.PushIngress
 import dk.foss.jarvis.push.FcmLifecycle
+import dk.foss.jarvis.notifications.HERMES_NOTIFICATION_TAP
+import dk.foss.jarvis.notifications.NotificationTapStore
+import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.ui.ChatScreen
 import dk.foss.jarvis.ui.ChatViewModel
 import dk.foss.jarvis.ui.ConversationScreen
@@ -28,6 +32,7 @@ private enum class Screen { Chat, Settings, Conversation, History }
 
 class MainActivity : ComponentActivity() {
     private var awaitingPushPermission = false
+    private var tappedSession: String? = null
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,16 +40,21 @@ class MainActivity : ComponentActivity() {
         // MainActivity is deliberately an ordinary app entry point. In
         // particular, neither ACTION_ASSIST nor notification extras are trust
         // signals here.
-        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }) }
+        tappedSession = consumeTap(intent)
+        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, initialSession = tappedSession) }
         lifecycleScope.launch { runCatching { PushIngress.scheduleStartupWork(applicationContext) } }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // Do not interpret actions or extras from an external intent as an
-        // assistant authorization or a request to start listening.
+        consumeTap(intent)?.let { session -> lifecycleScope.launch { ConversationRepository.get(applicationContext).open(session) } }
     }
+
+    private fun consumeTap(intent: android.content.Intent?): String? =
+        if (intent?.action == HERMES_NOTIFICATION_TAP && intent.`package` == packageName)
+            intent.getStringExtra("tap_token")?.let { NotificationTapStore.consume(this, it) }
+        else null
 
     private fun requestPushEnable() {
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -74,9 +84,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}) {
+internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}, initialSession: String? = null) {
     JarvisTheme {
-        var screen by remember { mutableStateOf(if (startInConversation) Screen.Conversation else Screen.Chat) }
+        var screen by remember { mutableStateOf(if (startInConversation || initialSession != null) Screen.Conversation else Screen.Chat) }
+        LaunchedEffect(initialSession) { initialSession?.let { ConversationRepository.get(activity).open(it) } }
         when (screen) {
                     Screen.Chat -> {
                         val vm: ChatViewModel = viewModel()
