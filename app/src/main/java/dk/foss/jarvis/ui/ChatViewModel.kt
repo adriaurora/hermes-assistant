@@ -435,6 +435,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             override fun onError(streamError: Throwable) = onMain {
                 if (generation != streamGeneration) return@onMain
+                if (shouldReconcile(streamError)) {
+                    // A broken SSE connection is ambiguous: the server may have
+                    // committed the turn. Read authoritative history instead of
+                    // ever replaying the user's message.
+                    isStreaming.value = true
+                    viewModelScope.launch {
+                        reconcileStream(client, sid, assistantIndex, generation, streamError)
+                    }
+                    return@onMain
+                }
                 val errMsg = semanticChatError(streamError)
                 if (errMsg.isBlank()) return@onMain
                 if ((streamError as? HermesHttpError)?.isAuth == true) {
@@ -466,6 +476,48 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 viewModelScope.launch { repo.persist() }
             }
         })
+    }
+
+    private fun shouldReconcile(error: Throwable): Boolean {
+        val http = error as? HermesHttpError
+        return error is StreamClosedBeforeTerminalError ||
+            (http == null && error !is java.util.concurrent.CancellationException) ||
+            (http?.code ?: 0) in 500..599
+    }
+
+    private suspend fun reconcileStream(
+        client: HermesClient,
+        sid: String,
+        assistantIndex: Int,
+        generation: Int,
+        originalError: Throwable,
+    ) {
+        val result = client.getSessionMessages(sid, limit = 500)
+        onMain {
+            if (generation != streamGeneration) return@onMain
+            val authoritative = result.getOrNull()?.data.orEmpty()
+            val lastUser = authoritative.indexOfLast { it.role == "user" }
+            val answer = if (lastUser >= 0) authoritative.drop(lastUser + 1)
+                .lastOrNull { it.role == "assistant" && it.content.isNotBlank() }?.content else null
+            if (answer != null) {
+                // Replace the local bubble, including partial deltas, so retries
+                // and reconnect callbacks cannot duplicate visible content.
+                repo.replaceMessage(assistantIndex, answer)
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch { repo.markUsed(); repo.persist() }
+            } else {
+                val msg = semanticChatError(originalError)
+                val cur = messages.getOrNull(assistantIndex)
+                if (cur != null && cur.text.isEmpty()) repo.replaceMessage(assistantIndex, "⚠️ $msg", isError = true)
+                else repo.addMessage("assistant", "⚠️ $msg", isError = true)
+                isStreaming.value = false
+                currentSource = null
+                activity.value = null
+                viewModelScope.launch { repo.persist() }
+            }
+        }
     }
 
     private suspend fun sendSessionTurnNonStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
