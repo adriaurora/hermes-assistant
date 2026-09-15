@@ -92,6 +92,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         lifecycleMutex.withLock {
             if (id != activeId) persistLocked()
             openLocked(id)
+            if (activeId == id) store.saveActiveId(id)
         }
     }
 
