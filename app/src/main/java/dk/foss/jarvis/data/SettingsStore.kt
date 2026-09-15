@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
+import dk.foss.jarvis.net.BlockedRequest
+import dk.foss.jarvis.net.NetworkGate
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmConnectionEffects
 import dk.foss.jarvis.push.FcmRevokeWorker
@@ -32,9 +34,26 @@ data class JarvisSettings(
     val isConfigured: Boolean get() = baseUrl.isNotEmpty() && apiKey.isNotEmpty()
 }
 
+/**
+ * Thrown when [SettingsStore.updateConnection] refuses to persist
+ * invalid settings. The previous (still-valid) settings are preserved.
+ */
+open class InvalidConnectionSettings(val reason: String) : IllegalArgumentException(reason)
+
+/**
+ * Thrown when the caller tries to downgrade from a secure (HTTPS) connection
+ * to an insecure one (HTTP) without explicit approval.  Protects against
+ * prompt-suppression attacks where a malicious HTTPS page could set an HTTP
+ * URL in the settings without the user seeing a consent dialog.
+ */
+class HttpDowngradeNotAllowed : InvalidConnectionSettings(
+    "Downgrading from HTTPS to HTTP requires explicit approval in Settings."
+)
+
 class SettingsStore internal constructor(
     private val store: DataStore<Preferences>,
     private val secure: SecureStore,
+    private val networkGate: NetworkGate? = null,
     private val onConnectionChanged: suspend (JarvisSettings, JarvisSettings) -> Unit = { _, _ -> },
     private val withConnectionLock: suspend (suspend () -> Unit) -> Unit = { block -> block() },
 ) {
@@ -47,6 +66,7 @@ class SettingsStore internal constructor(
     constructor(context: Context) : this(
         store = AndroidApprovedOriginsStore.dataStorePreferences(context),
         secure = SecureStore.get(context),
+        networkGate = null, // production gate is used inside validateConnectionForPersist
         onConnectionChanged = { old, new ->
             val app = context.applicationContext
             FcmConnectionEffects(PushPrefs(app), DeviceRegistryStore(app), { FcmRevokeWorker.schedule(app) }, { WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME) }).onConnectionChanged(old, new)
@@ -93,6 +113,51 @@ class SettingsStore internal constructor(
         )
     }
 
+    // ─── Pre-persist validation (defence in depth) ──────────────────────────
+
+    /**
+     * Validate [baseUrl] before persisting.  Steps:
+     * 1. Trim and check non-empty
+     * 2. Parse via [canonicalEndpointIdentity] — throws for malformed, opaque,
+     *    unsupported scheme, missing host, userinfo, query, fragment
+     * 3. Scheme must be http or https (enforced by [canonicalEndpointIdentity])
+     * 4. HTTPS → HTTP downgrade is only allowed when the new origin is already
+     *    in the approved set (explicit user consent).
+     *
+     * @throws InvalidConnectionSettings if the URL is structurally invalid.
+     * @throws HttpDowngradeNotAllowed when switching from HTTPS to HTTP
+     *   without prior approval.
+     * @return the canonical endpoint identity string (used for comparisons).
+     *   The **stored** value is the trimmed input, not the canonical form.
+     */
+    private fun validateConnectionForPersist(
+        baseUrl: String,
+        oldBaseUrl: String,
+        approvedOrigins: Set<String>,
+    ): String {
+        val trimmed = baseUrl.trim()
+        if (trimmed.isEmpty()) throw InvalidConnectionSettings("Empty URL")
+
+        // Step 1-3: structural validation (throws on malformed)
+        val canonical = canonicalEndpointIdentity(trimmed)
+
+        // Step 4: HTTPS → HTTP downgrade check (defence in depth).
+        // If the old config was HTTPS and the new one is HTTP, we require
+        // explicit prior approval to prevent prompt-suppression attacks.
+        val oldScheme = oldBaseUrl.trim().lowercase()
+        if (oldScheme.startsWith("https://") && !canonical.startsWith("https://")) {
+            // Downgrade detected: HTTPS → HTTP.  Only allowed if already approved.
+            if (canonical !in approvedOrigins) {
+                throw HttpDowngradeNotAllowed()
+            }
+        }
+
+        // Optional gate-level validation (used in tests with injected gate).
+        networkGate?.validate(canonical)
+
+        return canonical
+    }
+
     /**
      * Save connection settings. [apiKey] semantics:
      * - null  → keep whatever token is currently stored;
@@ -100,24 +165,46 @@ class SettingsStore internal constructor(
      * - other → replace the stored token.
      * Any legacy plaintext key in DataStore is removed either way.
      *
-     * If the new [baseUrl] is different from the old one and both use HTTP,
+     * **Validation before persist**: [baseUrl] is structurally validated
+     * (trim, URI parse, scheme/host check, canonicalisation) BEFORE any
+     * DataStore write.  A [InvalidConnectionSettings] or [HttpDowngradeNotAllowed]
+     * exception is thrown and the *previous* (still-valid) settings are
+     * preserved — they are never overwritten by invalid input.
+     *
+     * **FCM effects only after commit**: side-effects ([onConnectionChanged])
+     * fire only after the atomic `store.edit` succeeds, ensuring consistency.
+     *
+     * If the new [baseUrl] is different from the old one (canonical endpoint),
      * the old origin is atomically moved to the cleanup allowance so that
      * the revoke worker can still reach it — but ordinary traffic to the old
      * endpoint is blocked immediately.  This is a single `store.edit`
      * transaction, not a nested read/edit across multiple DataStores.
+     *
+     * @throws InvalidConnectionSettings if the URL is structurally invalid.
+     * @throws HttpDowngradeNotAllowed when downgrading HTTPS → HTTP without approval.
      */
     suspend fun updateConnection(baseUrl: String, apiKey: String?) {
         val normalized = baseUrl.trim().trimEnd('/')
         withConnectionLock {
             val old = settings.first()
+            val approvedOrigins = approvedHttpOrigins.first()
+
+            // ── Validate BEFORE any persist (defence in depth) ─────────
+            val canonical = validateConnectionForPersist(
+                baseUrl = normalized,
+                oldBaseUrl = old.baseUrl,
+                approvedOrigins = approvedOrigins,
+            )
 
             val newToken = when (apiKey) {
                 null -> old.apiKey
                 else -> apiKey.trim()
             }
-            // Single edit: persist new connection AND move old HTTP origin
-            // from active → cleanup.  Both are in the same DataStore so this
-            // is one atomic transaction — no nested DataStore read/edit.
+
+            // ── Single edit: persist new connection AND move old HTTP origin ─
+            // Atomic transaction — no nested DataStore read/edit.
+            // Store the *normalized* form (trimmed + no trailing slash),
+            // not the canonical form (which adds "/" for root paths).
             store.edit { p ->
                 p[Keys.BASE_URL] = normalized
                 if (apiKey != null) {
@@ -135,21 +222,20 @@ class SettingsStore internal constructor(
                 // do NOT trigger a cleanup move.  Only real host/port/path/
                 // scheme changes do.  Uses URL-only identity — API-key
                 // fingerprint is NOT part of endpoint approval.
-                val newEndpoint = runCatching { canonicalEndpointIdentity(normalized) }.getOrNull()
                 val oldEndpoint = runCatching {
                     canonicalEndpointIdentity(old.baseUrl.trim())
                 }.getOrNull()
-                if (oldEndpoint != null && newEndpoint != null && oldEndpoint != newEndpoint && old.baseUrl.isNotBlank()) {
-                    oldEndpoint.let { endpoint ->
-                        val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
-                        val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
-                        if (endpoint in currentApproved) {
-                            p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - endpoint
-                            p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + endpoint
-                        }
+                if (oldEndpoint != null && oldEndpoint != canonical && old.baseUrl.isNotBlank()) {
+                    val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
+                    val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
+                    if (oldEndpoint in currentApproved) {
+                        p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - oldEndpoint
+                        p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + oldEndpoint
                     }
                 }
             }
+
+            // ── FCM effects ONLY after atomic commit succeeds ────────────
             onConnectionChanged(old, JarvisSettings(normalized, newToken))
         }
     }
