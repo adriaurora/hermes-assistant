@@ -248,9 +248,14 @@ class SessionFirstTurnTest {
         assertTrue(startSessionTurn(r, client(), "o", "hello", "id", r.pendingModelIntent) is SessionTurnStartOutcome.LockFailed); assertEquals(2, server.requestCount); assertTrue(r.pendingModelIntent is PendingModelIntent.Set)
     }
 
-    @Test fun clearIntent_onFreshSession_consumedWithoutPost() = runBlocking {
-        server.enqueue(response("s1")); server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody("event: done\ndata: {}\n\n")); val r = ConversationRepository(ConversationStore(temporaryFolder.newFolder())); r.pendingModelIntent = PendingModelIntent.Clear
-        assertTrue(startSessionTurn(r, client(), "o", "hello", "id", r.pendingModelIntent) is SessionTurnStartOutcome.Started); assertNull(r.pendingModelIntent); sendStream(client(), "s1"); assertEquals("/api/sessions", server.takeRequest().path); assertEquals("/api/sessions/s1/chat/stream", server.takeRequest().path)
+    @Test fun clearIntent_onFreshSession_survivesRecreation_thenAcksBeforePost() = runBlocking {
+        server.enqueue(response("s1")); server.enqueue(MockResponse().setResponseCode(200).setBody("{}")); server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody("event: done\ndata: {}\n\n"))
+        val dir = temporaryFolder.newFolder(); val original = ConversationRepository(ConversationStore(dir)); original.recordPendingModelIntent(PendingModelIntent.Clear)
+        val r = ConversationRepository(ConversationStore(dir)); r.restoreLatest(); val c = client()
+        assertTrue(startSessionTurn(r, c, "o", "hello", "id", r.pendingModelIntent) is SessionTurnStartOutcome.Started); assertNull(r.pendingModelIntent); sendStream(c, "s1")
+        val requests = listOf(server.takeRequest(), server.takeRequest(), server.takeRequest())
+        assertEquals(listOf("/api/sessions", "/api/sessions/s1/model", "/api/sessions/s1/chat/stream"), requests.map { it.path })
+        assertEquals("{\"model\":null}", requests[1].body.readUtf8())
     }
 
     @Test fun clearIntent_onExistingSession_clearsModelBeforeTurn() = runBlocking {

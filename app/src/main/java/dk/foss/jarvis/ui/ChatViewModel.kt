@@ -140,7 +140,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val chosenLabel = option?.label ?: "Automatic"
             val intent = option?.let { PendingModelIntent.Set(it.modelId, it.label) } ?: PendingModelIntent.Clear
             val previousIntent = repo.pendingModelIntent
-            repo.pendingModelIntent = intent
+            repo.recordPendingModelIntent(intent)
             modelLabel.value = chosenLabel
             modelPickerOpen.value = false
 
@@ -158,7 +158,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             // Check selector availability first
             if (!modelSelection.state.selectorAvailable) {
-                repo.pendingModelIntent = previousIntent
+                repo.recordPendingModelIntent(previousIntent)
                 modelError.value = "Model selection is not supported by this server."
                 modelLabel.value = modelSelection.state.label
                 return@launch
@@ -182,13 +182,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         modelLabel.value = chosenLabel
                     }
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
-                    repo.consumePendingModelIntent(intent)
+                    viewModelScope.launch { repo.consumePendingModelIntentDurably(intent) }
                     modelPickerOpen.value = false
                 },
                 onFailure = {
                     modelSelection.onRejected()
                     modelLabel.value = modelSelection.state.label
-                    modelError.value = "Couldn't change model: ${it.message?.take(120)}"
+                    modelError.value = "Couldn't change the model. Try again."
                 },
             )
         }
@@ -220,11 +220,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             modelSelection.onClearAck(it.runtime)
                         }
                     }
-                    repo.consumePendingModelIntent(pending)
+                    viewModelScope.launch { repo.consumePendingModelIntentDurably(pending) }
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
                 },
                 onFailure = {
-                    modelError.value = "Model couldn't be pinned to this session: ${it.message?.take(120)}"
+                    modelError.value = "Couldn't pin the model to this session. Try again."
                      syncLabelWithServer(client, s.baseUrl, s.apiKey)
                 },
             )
@@ -362,7 +362,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 modelSelection.onRejected()
                 modelLabel.value = modelSelection.state.label
                 effectiveRoute.value = null
-                modelError.value = "Couldn't pin model to session: ${outcome.error.message?.take(120)}"
+                modelError.value = "Couldn't pin the model to this session. Try again."
                 repo.persistAsync()
                 return
             }

@@ -20,14 +20,13 @@ suspend fun startSessionTurn(
     uniqueSuffix: String,
     intent: PendingModelIntent?,
 ): SessionTurnStartOutcome {
-    val wasExisting = !repo.sessionId.isNullOrEmpty()
     val sid = repo.sessionId?.takeIf { it.isNotEmpty() }
         ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
         return SessionTurnStartOutcome.CreateFailed(it)
     }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
     var runtime: RuntimeInfo? = null
     E2eLog.log("model intent=${intentLogName(intent)}")
-    if (intent != null && !(intent is PendingModelIntent.Clear && !wasExisting)) {
+    if (intent != null) {
         val result = when (intent) {
             is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
             PendingModelIntent.Clear -> client.clearSessionModel(sid)
@@ -41,7 +40,7 @@ suspend fun startSessionTurn(
         runtime = result.getOrNull()?.runtime
         E2eLog.log("model intent=${intentLogName(intent)} ack=ok")
     }
-    if (intent != null) repo.consumePendingModelIntent(intent)
+    if (intent != null) repo.consumePendingModelIntentDurably(intent)
     return SessionTurnStartOutcome.Started(sid, runtime)
 }
 

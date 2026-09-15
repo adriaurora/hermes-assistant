@@ -24,11 +24,37 @@ import dk.foss.jarvis.net.E2eLog
  */
 class ConversationRepository internal constructor(private val store: ConversationStore) {
 
-    /** In-memory only: the next model operation which must be acknowledged. */
-    @Volatile var pendingModelIntent: PendingModelIntent? = null
-    fun consumePendingModelIntent() { pendingModelIntent = null }
+    /** Durable: the next model operation which must be acknowledged. */
+    @Volatile private var pendingIntent: PendingModelIntent? = null
+    var pendingModelIntent: PendingModelIntent?
+        get() = pendingIntent
+        set(value) {
+            pendingIntent = value
+        }
+
+    suspend fun recordPendingModelIntent(intent: PendingModelIntent?) = lifecycleMutex.withLock {
+        pendingIntent = intent
+        if (intent == null) store.clearPendingModelIntent(activeId)
+        else store.savePendingModelIntent(activeId, intent.toStored())
+        store.saveActiveId(activeId)
+    }
+
+    suspend fun consumePendingModelIntentDurably(expected: PendingModelIntent) = lifecycleMutex.withLock {
+        if (pendingIntent == expected) {
+            pendingIntent = null
+            store.clearPendingModelIntent(activeId)
+        }
+    }
+
+    fun consumePendingModelIntent() {
+        pendingIntent = null
+        ioScope.launch { lifecycleMutex.withLock { store.clearPendingModelIntent(activeId) } }
+    }
     fun consumePendingModelIntent(expected: PendingModelIntent) {
-        if (pendingModelIntent == expected) pendingModelIntent = null
+        if (pendingIntent == expected) {
+            pendingIntent = null
+            ioScope.launch { lifecycleMutex.withLock { store.clearPendingModelIntent(activeId) } }
+        }
     }
 
     sealed class RebindOutcome {
@@ -77,7 +103,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         title = ""
         createdAt = System.currentTimeMillis()
         dirty = false
-        pendingModelIntent = null
+        pendingIntent = null
         switched()
     }
 
@@ -106,7 +132,16 @@ class ConversationRepository internal constructor(private val store: Conversatio
     }
 
     private suspend fun openLocked(id: String) {
-        val c = store.load(id) ?: return
+        val c = store.load(id)
+        if (c == null) {
+            activeId = id
+            messages.clear()
+            sessionId = null; transport = null; origin = null; lastUsedAt = null
+            title = ""; createdAt = System.currentTimeMillis(); dirty = false
+            pendingIntent = store.loadPendingModelIntent(id)?.toIntent()
+            switched()
+            return
+        }
         activeId = c.id
         title = c.title
         createdAt = c.createdAt
@@ -116,7 +151,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
         E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} msgs=${c.messages.size}")
         dirty = false
-        pendingModelIntent = null
+        pendingIntent = store.loadPendingModelIntent(c.id)?.toIntent()
         switched()
     }
 
@@ -227,7 +262,6 @@ class ConversationRepository internal constructor(private val store: Conversatio
 
     private suspend fun persistLocked() {
         if (!dirty) return
-        if (messages.none { !it.isError }) return
         store.save(
             Conversation(
                 id = activeId,
@@ -268,4 +302,15 @@ class ConversationRepository internal constructor(private val store: Conversatio
                 instance ?: ConversationRepository(ConversationStore(context)).also { instance = it }
             }
     }
+}
+
+private fun PendingModelIntent.toStored(): StoredPendingModelIntent = when (this) {
+    is PendingModelIntent.Set -> StoredPendingModelIntent("SET", modelId, label)
+    PendingModelIntent.Clear -> StoredPendingModelIntent("CLEAR")
+}
+
+private fun StoredPendingModelIntent.toIntent(): PendingModelIntent? = when (kind) {
+    "SET" -> modelId?.takeIf { it.isNotBlank() }?.let { PendingModelIntent.Set(it, label ?: it) }
+    "CLEAR" -> PendingModelIntent.Clear
+    else -> null
 }

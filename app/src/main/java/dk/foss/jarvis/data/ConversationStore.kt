@@ -87,6 +87,19 @@ class ConversationStore {
         File(dir, "active").takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
     }
 
+    suspend fun savePendingModelIntent(id: String, intent: StoredPendingModelIntent) = withContext(Dispatchers.IO) {
+        val tmp = File(dir, "pending-$id.tmp")
+        tmp.writeText(json.encodeToString(PendingModelDraft.serializer(), PendingModelDraft(id, intent)))
+        try { Files.move(tmp.toPath(), File(dir, "pending-$id.json").toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+        catch (_: java.nio.file.AtomicMoveNotSupportedException) { Files.move(tmp.toPath(), File(dir, "pending-$id.json").toPath(), StandardCopyOption.REPLACE_EXISTING) }
+    }
+    suspend fun loadPendingModelIntent(id: String): StoredPendingModelIntent? = withContext(Dispatchers.IO) {
+        val file = File(dir, "pending-$id.json")
+        if (!file.isFile) return@withContext null
+        runCatching { json.decodeFromString(PendingModelDraft.serializer(), file.readText()).takeIf { it.conversationId == id }?.intent }.getOrNull()
+    }
+    suspend fun clearPendingModelIntent(id: String) = withContext(Dispatchers.IO) { File(dir, "pending-$id.json").delete() }
+
     private fun decodeConversation(raw: String): Conversation? {
         return try { json.decodeFromString(Conversation.serializer(), raw) }
         catch (_: Exception) {
