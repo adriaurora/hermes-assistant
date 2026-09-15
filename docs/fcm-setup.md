@@ -89,11 +89,11 @@ Install and enable the `hermes_assistant` plugin on the same Hermes `api_server`
 configured in Settings.
 
 **Hermes agent**: [adriaurora/hermes-agent](https://github.com/adriaurora/hermes-agent)
-- Branch: `api-server-enforce-key`
-- SHA: `c45d18265cdb3de00599cf80548dd34187fc750f`
+- Branch: `feature/platform-api-server-key-auth`
+- SHA: `1f517576c1beccc00562af91aa2cf73f1b48bdf7`
 
 **Hermes assistant plugin**: [adriaurora/hermes-assistant-plugin](https://github.com/adriaurora/hermes-assistant-plugin)
-- SHA: `c93c3ce40221773d512fcf7d41222795a5abed98`
+- SHA: `249135df3910d7f94b0529dfe9e05f7d89070933`
 
 ### Plugin Firebase credentials
 
@@ -205,7 +205,7 @@ Push (plugin required):
 2. Verify the Bearer key with a normal server check; do not expose it.
 3. Obtain the `hermes_assistant` plugin from its canonical upstream source
    [adriaurora/hermes-assistant-plugin](https://github.com/adriaurora/hermes-assistant-plugin)
-   (SHA `c93c3ce40221773d512fcf7d41222795a5abed98`).
+   (SHA `249135df3910d7f94b0529dfe9e05f7d89070933`).
 4. Enable the plugin and Wire Protocol v1 route.
 5. Configure server-side Firebase credentials as secrets (operator-owned, no
    shared maintainer project).

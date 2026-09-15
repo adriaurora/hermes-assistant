@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmConnectionEffects
@@ -130,20 +131,22 @@ class SettingsStore internal constructor(
                 p.remove(Keys.MODEL)
 
                 // Atomic cleanup of old HTTP origin in the same edit.
-                // Compare canonical identities so that URL-equivalent forms
-                // (default port folding, trailing slash, case) do NOT trigger
-                // a cleanup move.  Only real host/port/path/scheme changes do.
-                val newOrigin = runCatching { originIdentity(normalized) }.getOrNull()
-                val oldOrigin = runCatching {
-                    originIdentity(old.baseUrl.trim())
+                // Compare canonical endpoint identities so that URL-equivalent
+                // forms (default port folding, trailing slash, host case)
+                // do NOT trigger a cleanup move.  Only real host/port/path/
+                // scheme changes do.  Uses URL-only identity — API-key
+                // fingerprint is NOT part of endpoint approval.
+                val newEndpoint = runCatching { canonicalEndpointIdentity(normalized) }.getOrNull()
+                val oldEndpoint = runCatching {
+                    canonicalEndpointIdentity(old.baseUrl.trim())
                 }.getOrNull()
-                if (oldOrigin != null && newOrigin != null && oldOrigin != newOrigin && old.baseUrl.isNotBlank()) {
-                    oldOrigin.let { origin ->
+                if (oldEndpoint != null && newEndpoint != null && oldEndpoint != newEndpoint && old.baseUrl.isNotBlank()) {
+                    oldEndpoint.let { endpoint ->
                         val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
                         val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
-                        if (origin in currentApproved) {
-                            p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - origin
-                            p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + origin
+                        if (endpoint in currentApproved) {
+                            p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - endpoint
+                            p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + endpoint
                         }
                     }
                 }

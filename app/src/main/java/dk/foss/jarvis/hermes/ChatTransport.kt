@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import dk.foss.jarvis.net.E2eLog
 
@@ -74,11 +75,12 @@ object ChatTransportSelector {
 /**
  * Canonical connection identity for conversation binding and origin isolation.
  *
- * Builds a stable hash from the full base URL only: scheme + host lowercased,
- * default port folded, path preserved, no trailing slash.  **No API key** is
- * included — the identity is purely URL-based so that API key rotation does
- * not break conversation continuity on the same endpoint.  If callers need
- * per-key isolation they must append their own discriminator.
+ * Builds a stable hash from the full base URL (scheme + host lowercased,
+ * default port folded, path preserved, no trailing slash) combined with a
+ * non-reversible SHA-256 fingerprint of the API key (full 64-hex digest).
+ * If [apiKey] is null or blank only the URL forms the identity.
+ * This preserves API-key conversation isolation: conversations on the same
+ * host but different keys stay distinct.
  */
 fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatching {
     val uri = URI(baseUrl.trim().trimEnd('/'))
@@ -87,5 +89,48 @@ fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatchin
     val defaultPort = if (scheme == "http") 80 else if (scheme == "https") 443 else -1
     val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
     val path = uri.path.ifEmpty { "/" }
-    "$scheme://$host$port$path"
+    val urlPart = "$scheme://$host$port$path"
+    val keyHash = apiKey?.let { key ->
+        if (key.isBlank()) null
+        else {
+            val md = MessageDigest.getInstance("SHA-256")
+            md.update(key.toByteArray(Charsets.UTF_8))
+            md.digest().joinToString("") { "%02x".format(it) }
+        }
+    }
+    if (keyHash != null) "$urlPart-$keyHash" else urlPart
 }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
+
+/**
+ * URL-only canonical endpoint identity for Settings / gate / UI comparisons.
+ *
+ * Returns a stable normalised origin (scheme + lowercase host + explicit
+ * default port + path, no trailing slash).  Unlike [originIdentity] this
+ * **never** includes an API-key fingerprint — it is used exclusively for
+ * endpoint-approval decisions where key rotation must not break continuity.
+ *
+ * **Strict**: throws for invalid URIs — no fallback.  Caller must validate
+ * through [NetworkGate.validate] before using the result.
+ */
+fun canonicalEndpointIdentity(baseUrl: String): String {
+    val trimmed = baseUrl.trim().trimEnd('/')
+    if (trimmed.isEmpty()) throw IllegalArgumentException("Empty URL")
+    val uri = URI.create(trimmed)
+    if (uri.isOpaque) throw IllegalArgumentException("Malformed URL (opaque): $trimmed")
+    val scheme = uri.scheme
+    if (scheme == null ||
+        !scheme.equals("http", true) && !scheme.equals("https", true)) {
+        throw IllegalArgumentException("Unsupported scheme: $trimmed")
+    }
+    if (uri.host == null) throw IllegalArgumentException("Missing host: $trimmed")
+    if (uri.userInfo != null) throw IllegalArgumentException("URL contains userinfo: $trimmed")
+    if (uri.query != null) throw IllegalArgumentException("URL contains query: $trimmed")
+    if (uri.fragment != null) throw IllegalArgumentException("URL contains fragment: $trimmed")
+
+    val lowerScheme = scheme.lowercase()
+    val host = uri.host.lowercase()
+    val defaultPort = if (lowerScheme == "http") 80 else 443
+    val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+    val path = uri.path.ifEmpty { "/" }
+    return "$lowerScheme://$host$port$path"
+}
