@@ -54,6 +54,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var activeTurnJob: kotlinx.coroutines.Job? = null
     private var turnInFlight = false
     private var streamGeneration = 0
+    private var transitionInFlight = false
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     init {
@@ -271,15 +272,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun newConversation() {
+        if (transitionInFlight) return
+        transitionInFlight = true
         cancel()
         viewModelScope.launch {
-            repo.startNewAtomically()
+            try {
+                repo.startNewAtomically()
+                modelSelection.reset()
+                modelLabel.value = "Automatic"
+                effectiveRoute.value = null
+                sendBlocked.value = null
+                transportNotice.value = null
+            } finally {
+                transitionInFlight = false
+            }
         }
-        modelSelection.reset()
-        modelLabel.value = "Automatic"
-        effectiveRoute.value = null
-        sendBlocked.value = null
-        transportNotice.value = null
     }
 
     fun cancel() {
@@ -297,7 +304,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Public entry point: routes through the transport-aware decision engine. */
     fun sendUserMessage(userText: String) {
         val text = userText.trim()
-        if (text.isEmpty() || isStreaming.value || turnInFlight) return
+        if (text.isEmpty() || isStreaming.value || turnInFlight || transitionInFlight) return
 
         turnInFlight = true
         activeTurnJob = viewModelScope.launch {

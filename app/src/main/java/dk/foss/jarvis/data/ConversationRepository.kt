@@ -85,6 +85,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
     suspend fun startNewAtomically() = lifecycleMutex.withLock {
         persistLocked()
         startNew()
+        store.saveActiveId(activeId)
     }
 
     suspend fun open(id: String) {
@@ -98,8 +99,8 @@ class ConversationRepository internal constructor(private val store: Conversatio
     suspend fun restoreLatest() {
         lifecycleMutex.withLock {
             if (messages.isNotEmpty()) return
-            val latest = store.list().firstOrNull() ?: return
-            openLocked(latest.id)
+            val active = store.loadActiveId() ?: return
+            openLocked(active)
         }
     }
 
@@ -239,6 +240,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
                 lastUsedAt = lastUsedAt,
             ),
         )
+        store.saveActiveId(activeId)
         // Only clear after store.save has returned successfully. A failed write
         // deliberately leaves the repository dirty for a later retry.
         dirty = false

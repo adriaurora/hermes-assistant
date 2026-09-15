@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class ConversationFirstTurnTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
@@ -34,6 +35,24 @@ class ConversationFirstTurnTest {
     @Test fun `persisted title is first message text`() = runBlocking {
         val dir = temporaryFolder.newFolder(); val store = ConversationStore(dir); val r = ConversationRepository(store)
         r.queueFirstTurn("first message"); r.persist(); assertEquals("first message", store.load(r.activeConversationId)!!.title)
+    }
+
+    @Test fun `corrupt conversation is omitted from history`() = runBlocking {
+        val dir = temporaryFolder.newFolder()
+        File(dir, "broken.json").writeText("not json")
+        assertEquals(emptyList<ConversationMeta>(), ConversationStore(dir).list())
+    }
+
+    @Test fun `restore uses persisted active conversation rather than newest`() = runBlocking {
+        val dir = temporaryFolder.newFolder()
+        val store = ConversationStore(dir)
+        val first = ConversationRepository(store).also { it.queueFirstTurn("first"); it.persist() }
+        val second = ConversationRepository(store).also { it.queueFirstTurn("second"); it.persist() }
+        store.saveActiveId(first.activeConversationId)
+        val restored = ConversationRepository(store)
+        restored.restoreLatest()
+        assertEquals(first.activeConversationId, restored.activeConversationId)
+        assertEquals("first", restored.messages.single().text)
     }
 
     @Test fun `switched listener can be unsubscribed`() {
