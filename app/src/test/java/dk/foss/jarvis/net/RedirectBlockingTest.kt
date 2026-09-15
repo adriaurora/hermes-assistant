@@ -6,7 +6,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okhttp3.TlsVersion
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.tls.HeldCertificate
@@ -15,12 +14,6 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
-import java.util.concurrent.TimeUnit
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
-import java.security.cert.X509Certificate
-import java.security.SecureRandom
-import javax.net.ssl.SSLContext
 
 /**
  * Tests that OkHttp follows NO redirects (302/307/308) with **actual TLS**
@@ -29,29 +22,31 @@ import javax.net.ssl.SSLContext
  *
  * Http.base and Http.streaming are NOT modified — their redirect flags
  * (followRedirects=false, followSslRedirects=false) stay intact.
+ *
+ * All test clients are derived from Http.base.newBuilder() /
+ * Http.streaming.newBuilder() to inherit production followRedirects(false)
+ * and followSslRedirects(false) while adding test-cert trust.
+ *
+ * No TLS bypass — no TrustManager, no hostnameVerifier, no SSLContext.
  */
 class RedirectBlockingTest {
 
+    /** HandshakeCertificates providing both server cert + client trust anchor. */
+    private var serverHandshake: HandshakeCertificates? = null
     private var serverA = MockWebServer()
     private var serverB = MockWebServer()
+
+    /** Test client derived from Http.base.newBuilder() with test-cert trust. */
     private var testClient: OkHttpClient? = null
+
+    /** Test streaming client derived from Http.streaming.newBuilder() with test-cert trust. */
+    private var testStreamingClient: OkHttpClient? = null
 
     @Before fun setUp() {
         try { serverA.shutdown() } catch (_: Throwable) {}
         try { serverB.shutdown() } catch (_: Throwable) {}
 
-        // Trust-all trust manager for tests
-        val trustAllManager = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun getAcceptedIssuers(): Array<out X509Certificate> = emptyArray()
-        }
-
-        // Trust-all SSLContext
-        val trustAllSslContext = SSLContext.getInstance("TLS")
-        trustAllSslContext.init(null, arrayOf(trustAllManager), SecureRandom())
-
-        // Generate a self-signed certificate for the servers
+        // Generate a self-signed certificate for the TLS test servers
         val heldCert = HeldCertificate.Builder()
             .commonName("localhost")
             .addSubjectAlternativeName("localhost")
@@ -59,29 +54,29 @@ class RedirectBlockingTest {
             .rsa2048()
             .build()
 
-        // Build HandshakeCertificates for server cert + client trust
-        val handshakeCerts = HandshakeCertificates.Builder()
+        // Build HandshakeCertificates: server cert + trust ourselves (so client validates)
+        serverHandshake = HandshakeCertificates.Builder()
             .heldCertificate(heldCert)
             .addTrustedCertificate(heldCert.certificate)
             .build()
 
-        // Build a test-only OkHttpClient that trusts ALL certificates
-        testClient = OkHttpClient.Builder()
-            .sslSocketFactory(trustAllSslContext.socketFactory, trustAllManager)
-            .hostnameVerifier { _, _ -> true }
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(5, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .followSslRedirects(false)
+        // Derive test clients from Http.base / Http.streaming to inherit
+        // production followRedirects(false) / followSslRedirects(false)
+        testClient = Http.base.newBuilder()
+            .sslSocketFactory(serverHandshake!!.sslSocketFactory(), serverHandshake!!.trustManager)
             .build()
 
-        // Start servers with TLS using the handshakeCerts socket factory (provides both cert and key)
+        testStreamingClient = Http.streaming.newBuilder()
+            .sslSocketFactory(serverHandshake!!.sslSocketFactory(), serverHandshake!!.trustManager)
+            .build()
+
+        // Start TLS servers using the same HandshakeCertificates (provides cert + key)
         serverA = MockWebServer().apply {
-            useHttps(handshakeCerts.sslSocketFactory(), false)
+            useHttps(serverHandshake!!.sslSocketFactory(), false)
             start(0)
         }
         serverB = MockWebServer().apply {
-            useHttps(handshakeCerts.sslSocketFactory(), false)
+            useHttps(serverHandshake!!.sslSocketFactory(), false)
             start(0)
         }
     }
@@ -92,26 +87,36 @@ class RedirectBlockingTest {
     }
 
     /**
-     * HTTPS A → 302 redirect to HTTP B: must not follow, server B must receive 0 requests.
-     * Uses actual TLS MockWebServer A.
+     * HTTPS A → 302 redirect to actual plaintext HTTP B: must not follow,
+     * server B must receive 0 requests.
+     * Uses actual TLS MockWebServer A, actual plaintext MockWebServer B.
      */
     @Test fun `https_A_redirect_http_B_no_follow_bcount0`() = runBlocking {
         val gate = Http.testingGate
         val store = gate.approvedOrigins as InMemoryApprovedOriginsStore
         store.clearAll()
 
-        // HTTPS is always allowed, no approval needed
-        serverA.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "http://other.invalid/path"))
+        // Start a plaintext HTTP server B for the redirect target
+        val serverBPlaintext = MockWebServer().also { it.start(0) }
 
-        val conn = testClient!!.newCall(
-            okhttp3.Request.Builder().url(serverA.url("/")).build()
-        ).execute()
+        try {
+            // HTTPS A redirects to actual plaintext HTTP B
+            serverA.enqueue(MockResponse()
+                .setResponseCode(302)
+                .addHeader("Location", "http://localhost:${serverBPlaintext.port}/path"))
 
-        assertEquals(302, conn.code)
-        conn.close()
+            val conn = testClient!!.newCall(
+                okhttp3.Request.Builder().url(serverA.url("/")).build()
+            ).execute()
 
-        // Server B must have received ZERO requests
-        assertEquals("Server B must not receive any requests on redirect", 0, serverB.requestCount)
+            assertEquals(302, conn.code)
+            conn.close()
+
+            // Server B must have received ZERO requests
+            assertEquals("Server B must not receive any requests on redirect", 0, serverBPlaintext.requestCount)
+        } finally {
+            serverBPlaintext.shutdown()
+        }
     }
 
     /**
@@ -199,7 +204,7 @@ class RedirectBlockingTest {
             .setBody("data: hello\ndata: world\n")
             .addHeader("Content-Type: text/event-stream"))
 
-        val conn = testClient!!.newCall(
+        val conn = testStreamingClient!!.newCall(
             okhttp3.Request.Builder()
                 .url(serverA.url("/stream"))
                 .build()
@@ -215,7 +220,7 @@ class RedirectBlockingTest {
 
     /**
      * Direct HTTPS with actual TLS works fine (no redirect involved).
-     * Uses the test client that trusts the self-signed certificate.
+     * Uses the test client derived from Http.base.newBuilder().
      */
     @Test fun `direct_https_works_with_test_client`() = runBlocking {
         val port = serverA.port
@@ -245,7 +250,7 @@ class RedirectBlockingTest {
         val validated = gate.validate("https://localhost:$port")
         assertTrue("HTTPS should be validated", validated.isNotEmpty())
 
-        // Direct call works using test client
+        // Direct call works using test client derived from Http.base
         val conn = testClient!!.newCall(
             okhttp3.Request.Builder().url("https://localhost:$port/").build()
         ).execute()
@@ -257,13 +262,14 @@ class RedirectBlockingTest {
     /**
      * Approved HTTP A → 302 redirect to actual HTTP B: B must receive 0 requests.
      * Uses actual HTTP MockWebServer B (not other.invalid).
+     * Derives client from Http.base.newBuilder() to preserve production flags.
      */
     @Test fun `approved_http_A_redirect_302_to_http_B_bcount0`() = runBlocking {
         val gate = Http.testingGate
         val store = gate.approvedOrigins as InMemoryApprovedOriginsStore
         store.clearAll()
 
-        // Start a dedicated plaintext HTTP server A (separate from TLS servers)
+        // Start dedicated plaintext HTTP servers (separate from TLS servers)
         val serverHttpA = MockWebServer().also { it.start(0) }
         val serverHttpB = MockWebServer().also { it.start(0) }
 
@@ -276,10 +282,14 @@ class RedirectBlockingTest {
             store.addSync(canonicalEndpointIdentity("http://localhost:$portA"))
 
             // Server A (plaintext) redirects to actual HTTP server B
-            serverHttpA.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "http://localhost:$portB/"))
+            serverHttpA.enqueue(MockResponse()
+                .setResponseCode(302)
+                .addHeader("Location", "http://localhost:$portB/"))
 
-            // Use Http.base (plaintext HTTP through Http.base)
-            val conn = Http.base.newCall(
+            // Derive client from Http.base.newBuilder() — inherits followRedirects(false)
+            val httpClient = Http.base.newBuilder().build()
+
+            val conn = httpClient.newCall(
                 okhttp3.Request.Builder().url("http://localhost:$portA/").build()
             ).execute()
 
@@ -309,5 +319,21 @@ class RedirectBlockingTest {
     @Test fun `streaming_client_inherits_no_redirects`() {
         assertFalse("Http.streaming must not follow redirects", Http.streaming.followRedirects)
         assertFalse("Http.streaming must not follow SSL redirects", Http.streaming.followSslRedirects)
+    }
+
+    /**
+     * Verify test client derived from Http.base inherits no-redirect flags.
+     */
+    @Test fun `test_client_inherits_no_redirects_from_base`() {
+        assertFalse("testClient must not follow redirects", testClient!!.followRedirects)
+        assertFalse("testClient must not follow SSL redirects", testClient!!.followSslRedirects)
+    }
+
+    /**
+     * Verify streaming test client inherits no-redirect flags.
+     */
+    @Test fun `test_streaming_client_inherits_no_redirects_from_base`() {
+        assertFalse("testStreamingClient must not follow redirects", testStreamingClient!!.followRedirects)
+        assertFalse("testStreamingClient must not follow SSL redirects", testStreamingClient!!.followSslRedirects)
     }
 }
