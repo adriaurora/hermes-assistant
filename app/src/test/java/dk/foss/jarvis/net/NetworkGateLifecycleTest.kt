@@ -1,6 +1,6 @@
 package dk.foss.jarvis.net
 
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,11 +38,11 @@ class NetworkGateLifecycleTest {
         val oldHttp = "http://hermes-a.local:8642"
 
         // 1. User approves old HTTP endpoint
-        store.add(originIdentity(oldHttp))
+        store.add(canonicalEndpointIdentity(oldHttp))
         assertTrue("Old origin must be allowed for ordinary traffic before move", isAllowed(oldHttp))
 
         // 2. Settings change — move old origin to cleanup allowance
-        runBlocking { store.moveForCleanup(originIdentity(oldHttp)) }
+        runBlocking { store.moveForCleanup(canonicalEndpointIdentity(oldHttp)) }
         assertFalse("Old origin must be BLOCKED for ordinary traffic after move", isAllowed(oldHttp))
         assertTrue("Old origin must be ALLOWED for cleanup after move", isAllowedForCleanup(oldHttp))
 
@@ -50,7 +50,7 @@ class NetworkGateLifecycleTest {
         assertTrue("Old origin must be accessible during revoke cleanup", isAllowedForCleanup(oldHttp))
 
         // 4. Revoke complete — cleanup cleared (FcmRevokeCleanup removes old origin)
-        cleanupStore.removeFromCleanup(originIdentity(oldHttp))
+        cleanupStore.removeFromCleanup(canonicalEndpointIdentity(oldHttp))
         assertFalse("Old origin must NOT be in cleanup after revoke", isAllowedForCleanup(oldHttp))
         assertFalse("Old HTTP approval must be removed after successful revoke", isAllowed(oldHttp))
     }
@@ -87,12 +87,12 @@ class NetworkGateLifecycleTest {
         val newHttp = "http://hermes-b.local:8642"
 
         // User approves old HTTP endpoint
-        store.add(originIdentity(oldHttp))
+        store.add(canonicalEndpointIdentity(oldHttp))
         assertTrue("Old origin must be allowed before move", isAllowed(oldHttp))
 
         // User changes to new HTTP endpoint — atomic move
-        runBlocking { store.moveForCleanup(originIdentity(oldHttp)) }
-        store.add(originIdentity(newHttp))
+        runBlocking { store.moveForCleanup(canonicalEndpointIdentity(oldHttp)) }
+        store.add(canonicalEndpointIdentity(newHttp))
 
         // Old origin: blocked for ordinary, allowed for cleanup
         assertFalse("Old origin must be BLOCKED for ordinary traffic after move", isAllowed(oldHttp))
@@ -105,7 +105,7 @@ class NetworkGateLifecycleTest {
         assertFalse("New origin must NOT be in cleanup allowance", isCleanupOnly(newHttp))
 
         // Revoke completes → old origin removed from cleanup
-        runBlocking { cleanupStore.removeFromCleanup(originIdentity(oldHttp)) }
+        runBlocking { cleanupStore.removeFromCleanup(canonicalEndpointIdentity(oldHttp)) }
         assertFalse("Old origin must be fully removed after revoke", isAllowed(oldHttp))
         assertFalse("Old origin must be removed from cleanup", isAllowedForCleanup(oldHttp))
 
@@ -127,20 +127,20 @@ class NetworkGateLifecycleTest {
         val newHttp = "http://hermes-b.local:8642"
 
         // User approves old HTTP endpoint
-        store.add(originIdentity(oldHttp))
+        store.add(canonicalEndpointIdentity(oldHttp))
         assertTrue(isAllowed(oldHttp))
 
         // User adds new HTTP endpoint (simulating old broken behavior — both added)
-        store.add(originIdentity(newHttp))
+        store.add(canonicalEndpointIdentity(newHttp))
 
         // Both origins are now allowed (this demonstrates the old bug)
         assertTrue("Old origin is still allowed (old broken behavior)", isAllowed(oldHttp))
         assertTrue("New origin is allowed", isAllowed(newHttp))
 
         // Contrast: using moveForCleanup, old origin is blocked
-        store.add(originIdentity("http://hermes-c.local:8642"))
-        runBlocking { store.moveForCleanup(originIdentity("http://hermes-c.local:8642")) }
-        store.add(originIdentity(newHttp))
+        store.add(canonicalEndpointIdentity("http://hermes-c.local:8642"))
+        runBlocking { store.moveForCleanup(canonicalEndpointIdentity("http://hermes-c.local:8642")) }
+        store.add(canonicalEndpointIdentity(newHttp))
         assertFalse("Old origin must be BLOCKED when using moveForCleanup", isAllowed("http://hermes-c.local:8642"))
     }
 

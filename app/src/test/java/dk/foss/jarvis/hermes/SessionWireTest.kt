@@ -26,7 +26,7 @@ class SessionWireTest {
     @Before
     fun setUp() {
         server.start()
-        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        val origin = canonicalEndpointIdentity(server.url("/").toString().trimEnd('/'))
         (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
     }
 

@@ -159,7 +159,8 @@ class SettingsStore internal constructor(
 
     /**
      * Returns the set of HTTP origins that have been explicitly approved.
-     * Origins are the normalised form from [dk.foss.jarvis.hermes.originIdentity].
+     * Origins use the normalised URL-only canonical form from
+     * [dk.foss.jarvis.hermes.canonicalEndpointIdentity].
      */
     val approvedHttpOrigins: Flow<Set<String>> = store.data.map { p ->
         p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()

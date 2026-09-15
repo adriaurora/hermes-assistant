@@ -3,7 +3,6 @@ package dk.foss.jarvis.push
 import dk.foss.jarvis.data.DeviceRegistryStore
 import dk.foss.jarvis.data.SecureStore
 import dk.foss.jarvis.data.SettingsStore
-import dk.foss.jarvis.hermes.originIdentity
 
 /**
  * Cleanup logic that runs when an FCM revoke succeeds.
@@ -24,10 +23,10 @@ import dk.foss.jarvis.hermes.originIdentity
  * ## Approval removal semantics
  *
  * The caller passes the old origin as a normalised string (the result of
- * [originIdentity] or `hermesOrigin` from the registry).  [onComplete]
- * removes it from the approved set after a successful revoke.  If the old
- * origin was HTTPS, nothing is removed — HTTPS is always allowed and
- * requires no approval.
+ * [dk.foss.jarvis.hermes.canonicalEndpointIdentity] or `hermesOrigin` from the
+ * registry).  [onComplete] removes it from the approved set after a successful
+ * revoke.  If the old origin was HTTPS, nothing is removed — HTTPS is always
+ * allowed and requires no approval.
  */
 internal object FcmRevokeCleanup {
 

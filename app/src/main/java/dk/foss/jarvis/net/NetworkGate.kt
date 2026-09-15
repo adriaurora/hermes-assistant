@@ -1,6 +1,6 @@
 package dk.foss.jarvis.net
 
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 
 /**
  * Centralised network policy gate — fail-closed by default.
@@ -19,10 +19,13 @@ import dk.foss.jarvis.hermes.originIdentity
  * 4. **No network before block** — every caller MUST invoke this gate *before*
  *    constructing an [okhttp3.Request] or any other transport primitive.
  *
- * Approval is **per endpoint** (origin), not per API key. The identity used is
- * the same normalised origin that [dk.foss.jarvis.hermes.originIdentity] builds
- * for conversation isolation (scheme lowercased, host lowercased, default port
- * folded, path preserved, no trailing slash).
+ * Approval is **per endpoint** (origin), not per API key.  The identity used
+ * is [dk.foss.jarvis.hermes.canonicalEndpointIdentity]: URL-only normalised
+ * form (scheme lowercased, host lowercased, default port folded, path
+ * preserved, no trailing slash).  This is distinct from
+ * [dk.foss.jarvis.hermes.originIdentity] which appends an API-key fingerprint
+ * for conversation isolation — that is only used for conversation binding,
+ * never for approvals.
  *
  * ## Scope separation
  *
@@ -107,7 +110,7 @@ class NetworkGate(
 
         // 10. HTTP — must be approved in the active set (per endpoint, not per key).
         if (lowerScheme == "http") {
-            if (!approvedOrigins.isApprovedSync(originIdentity(baseUrl))) {
+            if (!approvedOrigins.isApprovedSync(canonicalEndpointIdentity(baseUrl))) {
                 throw BlockedRequest(
                     "Insecure HTTP to '$baseUrl' is blocked. " +
                         "This app enforces HTTPS by default. " +
@@ -118,7 +121,7 @@ class NetworkGate(
         }
 
         // All checks passed — canonicalise
-        return originIdentity(baseUrl)
+        return canonicalEndpointIdentity(baseUrl)
     }
 
     /**
@@ -129,7 +132,8 @@ class NetworkGate(
      * has switched to a new one.
      *
      * @throws BlockedRequest if the URL is not in the cleanup allowance.
-     * @return the canonical [originIdentity] string.
+     * @return the canonical endpoint identity string (scheme + host + port +
+     *   path) so callers can log or cache the validated origin.
      */
     fun validateForCleanup(baseUrl: String): String {
         val trimmed = baseUrl.trim()
@@ -157,9 +161,9 @@ class NetworkGate(
         // For HTTP: must be in the active set OR the cleanup allowance.
         if (lowerScheme == "http") {
             // First check the active set (normal revoke on current endpoint)
-            val activeOk = approvedOrigins.isApprovedSync(originIdentity(baseUrl))
+            val activeOk = approvedOrigins.isApprovedSync(canonicalEndpointIdentity(baseUrl))
             // Then check the cleanup allowance (revoke on old endpoint)
-            val cleanupOk = cleanupStore?.isCleanupAllowedSync(originIdentity(baseUrl)) ?: false
+            val cleanupOk = cleanupStore?.isCleanupAllowedSync(canonicalEndpointIdentity(baseUrl)) ?: false
             if (!activeOk && !cleanupOk) {
                 throw BlockedRequest(
                     "Insecure HTTP to '$baseUrl' is blocked. " +
@@ -170,7 +174,7 @@ class NetworkGate(
             }
         }
 
-        return originIdentity(baseUrl)
+        return canonicalEndpointIdentity(baseUrl)
     }
 }
 

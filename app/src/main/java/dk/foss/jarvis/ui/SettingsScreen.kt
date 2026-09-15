@@ -52,7 +52,7 @@ import androidx.compose.ui.unit.sp
 import dk.foss.jarvis.BuildConfig
 import dk.foss.jarvis.data.SettingsStore
 import dk.foss.jarvis.hermes.HermesClient
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.push.FcmRegistrationState
 import dk.foss.jarvis.push.FcmTokenRegistration
@@ -159,8 +159,10 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     LaunchedEffect(baseUrl, approvedOrigins) {
         if (isHttp) {
-            currentHttpOrigin = originIdentity(baseUrl)
-            isHttpApproved = approvedOrigins.contains(currentHttpOrigin)
+            currentHttpOrigin = runCatching { canonicalEndpointIdentity(baseUrl) }.getOrNull()
+            isHttpApproved = currentHttpOrigin.let { origin ->
+                origin != null && approvedOrigins.contains(origin)
+            }
         } else {
             isHttpApproved = false
             currentHttpOrigin = null

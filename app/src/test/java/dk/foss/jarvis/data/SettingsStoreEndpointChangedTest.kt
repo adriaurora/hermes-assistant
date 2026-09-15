@@ -10,7 +10,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 
 /**
  * Tests that SettingsStore endpoint change uses URL-only canonical endpoint
@@ -44,7 +44,7 @@ class SettingsStoreEndpointChangedTest {
         return SettingsStore(ds, SecureStore(FakeCipher(), MemBlobs()))
     }
 
-    private fun canon(url: String) = originIdentity(url.trim())
+    private fun canon(url: String) = canonicalEndpointIdentity(url.trim())
 
     // ── Canonical-equivalent: no cleanup triggered ───────────────────────
 

@@ -4,7 +4,7 @@ import dk.foss.jarvis.hermes.EventFetchException
 import dk.foss.jarvis.hermes.EventRpcClient
 import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesHttpException
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.Http
 import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okhttp3.mockwebserver.MockResponse
@@ -153,7 +153,7 @@ class FcmRevokePolicyTest {
 
     @Before fun setUp() {
         server.start()
-        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        val origin = canonicalEndpointIdentity(server.url("/").toString().trimEnd('/'))
         (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
     }
     @After fun tearDown() { server.shutdown() }

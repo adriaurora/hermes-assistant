@@ -1,6 +1,6 @@
 package dk.foss.jarvis.net
 
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -39,7 +39,7 @@ class NetworkGateMatrixTest {
     }
 
     @Test fun `http_uppercase_scheme_allowed_with_approval`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         assertTrue(isAllowed("HTTP://hermes.local"))
     }
 
@@ -69,8 +69,8 @@ class NetworkGateMatrixTest {
 
     @Test fun `trailing_slash_normalized`() = runBlocking {
         // originIdentity normalises URLs; trailing slash on path is part of origin
-        val withSlash = originIdentity("http://hermes.local:8642/")
-        val withoutSlash = originIdentity("http://hermes.local:8642")
+        val withSlash = canonicalEndpointIdentity("http://hermes.local:8642/")
+        val withoutSlash = canonicalEndpointIdentity("http://hermes.local:8642")
         // Both should produce the same normalized origin
         assertEquals(withSlash, withoutSlash)
         store.add(withoutSlash)
@@ -79,7 +79,7 @@ class NetworkGateMatrixTest {
 
     @Test fun `whitespace_trimmed`() = runBlocking {
         // The gate trims the URL before parsing
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         assertTrue(isAllowed("  http://hermes.local  "))
     }
 
@@ -94,7 +94,7 @@ class NetworkGateMatrixTest {
     // ── HTTP approval lifecycle matrix ─────────────────────────────────
 
     @Test fun `approve_then_validate_then_revoke`() = runBlocking {
-        val origin = originIdentity("http://dev.local:8642")
+        val origin = canonicalEndpointIdentity("http://dev.local:8642")
         store.add(origin)
 
         // Approved → allowed
@@ -106,7 +106,7 @@ class NetworkGateMatrixTest {
     }
 
     @Test fun `add_duplicate_is_idempotent`() = runBlocking {
-        val origin = originIdentity("http://dev.local:8642")
+        val origin = canonicalEndpointIdentity("http://dev.local:8642")
         store.add(origin)
         store.add(origin)
         store.add(origin)
@@ -114,18 +114,18 @@ class NetworkGateMatrixTest {
     }
 
     @Test fun `remove_nonexistent_is_idempotent`() = runBlocking {
-        store.remove(originIdentity("http://nonexistent.local"))
+        store.remove(canonicalEndpointIdentity("http://nonexistent.local"))
         // Should not throw
     }
 
     @Test fun `multiple_approvals_independent`() = runBlocking {
-        store.add(originIdentity("http://a.local:8642"))
-        store.add(originIdentity("http://b.local:8642"))
+        store.add(canonicalEndpointIdentity("http://a.local:8642"))
+        store.add(canonicalEndpointIdentity("http://b.local:8642"))
 
         assertTrue(isAllowed("http://a.local:8642"))
         assertTrue(isAllowed("http://b.local:8642"))
 
-        store.remove(originIdentity("http://a.local:8642"))
+        store.remove(canonicalEndpointIdentity("http://a.local:8642"))
         assertFalse(isAllowed("http://a.local:8642"))
         assertTrue(isAllowed("http://b.local:8642"))
     }

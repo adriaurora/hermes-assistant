@@ -1,6 +1,6 @@
 package dk.foss.jarvis.net
 
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,32 +72,32 @@ class NetworkGateTest {
 
     // 3. HTTP with approval → allowed
     @Test fun `http_with_approval_allowed()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local:8642"))
-        assertEquals(originIdentity("http://hermes.local:8642"), assertAllowed("http://hermes.local:8642"))
+        store.add(canonicalEndpointIdentity("http://hermes.local:8642"))
+        assertEquals(canonicalEndpointIdentity("http://hermes.local:8642"), assertAllowed("http://hermes.local:8642"))
     }
 
     // 4. Host-only HTTP (no path)
     @Test fun `http_host_only()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
-        assertEquals(originIdentity("http://hermes.local"), assertAllowed("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("http://hermes.local"), assertAllowed("http://hermes.local"))
     }
 
     // 5. HTTP with port 80 default
     @Test fun `http_port_80_default()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local:80"))
-        assertEquals(originIdentity("http://hermes.local:80"), assertAllowed("http://hermes.local:80"))
+        store.add(canonicalEndpointIdentity("http://hermes.local:80"))
+        assertEquals(canonicalEndpointIdentity("http://hermes.local:80"), assertAllowed("http://hermes.local:80"))
     }
 
     // 6. HTTPS not in approved set → still allowed
     @Test fun `https_not_in_approved_set_allowed()`() = runBlocking {
         store.add("http://hermes.local:8642")
-        assertEquals(originIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
     }
 
     // 7. HTTPS not in cleanup set → still allowed
     @Test fun `https_not_in_cleanup_set_allowed()`() = runBlocking {
         cleanupStore.add("http://hermes.local:8642")
-        assertEquals(originIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
     }
 
     // 8. Unsupported scheme → blocked
@@ -122,52 +122,52 @@ class NetworkGateTest {
 
     // 12. HTTP with path
     @Test fun `http_with_path()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local:8642/api"))
-        assertEquals(originIdentity("http://hermes.local:8642/api"), assertAllowed("http://hermes.local:8642/api"))
+        store.add(canonicalEndpointIdentity("http://hermes.local:8642/api"))
+        assertEquals(canonicalEndpointIdentity("http://hermes.local:8642/api"), assertAllowed("http://hermes.local:8642/api"))
     }
 
     // 13. HTTPS with default port folded
     @Test fun `https_default_port_folded()`() = runBlocking {
         val r = assertAllowed("https://hermes.local:443")
-        assertEquals(originIdentity("https://hermes.local:443"), r)
+        assertEquals(canonicalEndpointIdentity("https://hermes.local:443"), r)
     }
 
     // 14. HTTP with default port folded
     @Test fun `http_default_port_folded()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         val r = assertAllowed("http://hermes.local:80")
-        assertEquals(originIdentity("http://hermes.local"), r)
+        assertEquals(canonicalEndpointIdentity("http://hermes.local"), r)
     }
 
     // 15. HTTPS never needs approval
     @Test fun `https_never_needs_approval()`() = runBlocking {
-        assertEquals(originIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
         store.clearAll()
-        assertEquals(originIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("https://hermes.local"), assertAllowed("https://hermes.local"))
     }
 
     // 16. HTTP needs explicit approval
     @Test fun `http_needs_explicit_approval()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
-        assertEquals(originIdentity("http://hermes.local"), assertAllowed("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
+        assertEquals(canonicalEndpointIdentity("http://hermes.local"), assertAllowed("http://hermes.local"))
         // Other origin not added → blocked
         assertBlocked("http://other.local", "blocked")
     }
 
     // 17. HTTP with userinfo blocked
     @Test fun `http_with_userinfo_blocked()`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         // Even approved HTTP with userinfo is blocked
         assertBlocked("http://user:pass@hermes.local", "userinfo")
     }
 
     @Test fun `http_with_query_blocked`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         assertBlocked("http://hermes.local?debug=true", "query")
     }
 
     @Test fun `http_with_fragment_blocked`() = runBlocking {
-        store.add(originIdentity("http://hermes.local"))
+        store.add(canonicalEndpointIdentity("http://hermes.local"))
         assertBlocked("http://hermes.local#section", "fragment")
     }
 
@@ -193,7 +193,7 @@ class NetworkGateTest {
      * - validateForCleanup() checks active OR cleanup → ALLOWED (cleanup set)
      */
     @Test fun `move_for_cleanup_blocks_ordinary_allows_cleanup()`() = runBlocking {
-        val origin = originIdentity("http://hermes-a.local:8642")
+        val origin = canonicalEndpointIdentity("http://hermes-a.local:8642")
         store.add(origin)
 
         // Before move: both allowed
@@ -213,7 +213,7 @@ class NetworkGateTest {
      * Manual revoke removes from both scopes — no ordinary and no cleanup.
      */
     @Test fun `manual_revoke_clears_both_scopes()`() = runBlocking {
-        val origin = originIdentity("http://hermes-a.local:8642")
+        val origin = canonicalEndpointIdentity("http://hermes-a.local:8642")
         store.add(origin)
         store.moveForCleanup(origin)
 
@@ -231,7 +231,7 @@ class NetworkGateTest {
      * Clear all removes both active and cleanup.
      */
     @Test fun `clear_all_cleans_both_scopes()`() = runBlocking {
-        val origin = originIdentity("http://hermes-a.local:8642")
+        val origin = canonicalEndpointIdentity("http://hermes-a.local:8642")
         store.add(origin)
         store.moveForCleanup(origin)
 
