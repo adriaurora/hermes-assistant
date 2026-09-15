@@ -44,6 +44,9 @@ class PushPrefs constructor(private val store: DataStore<Preferences>) : PushSta
     override suspend fun setPendingCredentialClear(value:Boolean) { store.edit { it[Keys.PENDING_CREDENTIAL_CLEAR]=value } }
     override suspend fun isPendingCredentialClear()=pendingCredentialClear.first()
     suspend fun recordDelivered(id:String){store.edit{it[Keys.DELIVERED_EVENTS]=DeliveredEventLog.encode(DeliveredEventLog.append(DeliveredEventLog.decode(it[Keys.DELIVERED_EVENTS]),id))}}
+    suspend fun forgetDelivered(id:String){store.edit { p ->
+        p[Keys.DELIVERED_EVENTS] = DeliveredEventLog.encode(DeliveredEventLog.decode(p[Keys.DELIVERED_EVENTS]).filterNot { it == id })
+    }}
     suspend fun wasDelivered(id:String)=DeliveredEventLog.decode(store.data.first()[Keys.DELIVERED_EVENTS]).contains(id)
     override suspend fun choice()=store.data.first()[Keys.PUSH_TRANSPORT]
     override suspend fun lastProbe()=store.data.first()[Keys.PUSH_PROBE_RESULT]

@@ -12,7 +12,7 @@ class FcmEventWorker(appContext: Context, params: WorkerParameters) : CoroutineW
             GateOutcome.FETCH_FAILURE, GateOutcome.DELIVERY_FAILURE, GateOutcome.ACK_FAILURE ->
                 if (FcmRetryDecision.shouldRetry(outcome, runAttemptCount)) Result.retry() else Result.failure()
             GateOutcome.FETCH_PERMANENT -> Result.failure()
-            GateOutcome.NOTIFIED, GateOutcome.DEDUPED, GateOutcome.DISABLED,
+            GateOutcome.NOTIFIED, GateOutcome.DEDUPED, GateOutcome.DISABLED, GateOutcome.PERMISSION_DENIED,
             GateOutcome.ACKED, GateOutcome.NO_DEVICE -> Result.success()
         }
         PushIngress.schedulePendingSync(applicationContext)

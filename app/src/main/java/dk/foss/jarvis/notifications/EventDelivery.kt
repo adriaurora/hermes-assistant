@@ -46,6 +46,10 @@ class EventFetcher(
             return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
                 cause = IllegalArgumentException("event_id does not match requested id")))
         }
+        if (event.expires_at != null && event.expires_at <= now()) {
+            deduper.forget(eventId)
+            return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
+        }
         val envelope = EventMapper.toEnvelope(event)
         // Keep the clock dependency available for callers that enforce expiry at presentation time.
         now()
@@ -87,6 +91,8 @@ class EventDispatcher(
     private val deduper: NotificationDeduper = NotificationDeduper(),
     private val wasDelivered: suspend (String) -> Boolean = { false },
     private val onDelivered: suspend (String) -> Unit = {},
+    private val onDeliveryRejected: suspend (String) -> Unit = {},
+    private val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
     private val notify: (HermesEventEnvelope, Int) -> Unit,
 ) {
     private val fetcher = EventFetcher(client, deduper)
@@ -116,13 +122,18 @@ class EventDispatcher(
             return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
                 cause = IllegalArgumentException("event_id does not match requested id")))
         }
+        if (event.expires_at != null && event.expires_at <= now()) {
+            deduper.forget(eventId)
+            return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
+        }
         val envelope = EventMapper.toEnvelope(event)
+        onDelivered(eventId)
         try { notify(envelope, StableNotificationId.forEvent(eventId)) }
         catch (failure: Throwable) {
+            onDeliveryRejected(eventId)
             deduper.forget(eventId)
             return Result.failure(failure)
         }
-        onDelivered(eventId)
         return client.ack(eventId).fold(
             onSuccess = { Result.success(true) },
             onFailure = { deduper.markAckPending(eventId); Result.failure(it) },

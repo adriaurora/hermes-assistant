@@ -56,11 +56,14 @@ object PushIngress {
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return GateOutcome.NO_DEVICE
         val client = rpcClient(settings, device)
-        val gate = PushGate(PushDeps(settings.isConfigured, device.deviceId, client, deduper, notify = { envelope, id ->
+        val gate = PushGate(PushDeps(settings.isConfigured, device.deviceId, client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it) },
+            onDeliveryRejected = { prefs.forgetDelivered(it) }, notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) DeliveryOutcome.PERMISSION_DENIED
             else runCatching { postReminderNotification(context, envelope, id) }
                 .fold({ DeliveryOutcome.SUCCESS }, { DeliveryOutcome.POST_FAILURE })
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) }))
+        }))
         return gate.handlePull(eventId)
     }
 
@@ -69,14 +72,20 @@ object PushIngress {
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return 0
         if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return 0
+        // A denied runtime permission is user-recoverable, not a transient
+        // network failure: leave the durable event pending without retrying.
+        if (!NotificationPermission.ensure(context)) return 0
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return 0
         var delivered = 0
         val client = rpcClient(settings, device)
-        val dispatcher = EventDispatcher(client, deduper, notify = { envelope, id ->
+        val dispatcher = EventDispatcher(client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it) },
+            notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
             postReminderNotification(context, envelope, id); delivered++
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) })
+        }, onDeliveryRejected = { prefs.forgetDelivered(it) })
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
     }
 
@@ -86,13 +95,17 @@ object PushIngress {
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return Result.success(0)
         if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return Result.success(0)
+        if (!NotificationPermission.ensure(context)) return Result.success(0)
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return Result.success(0)
         val client = rpcClient(settings, device)
-        val dispatcher = EventDispatcher(client, deduper, notify = { envelope, id ->
+        val dispatcher = EventDispatcher(client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it) },
+            notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
             postReminderNotification(context, envelope, id)
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) })
+        }, onDeliveryRejected = { prefs.forgetDelivered(it) })
         return dispatcher.onPendingSync()
     }
 
@@ -138,8 +151,19 @@ object PushIngress {
             dk.foss.jarvis.push.FcmRevokeWorker.schedule(context)
             return
         }
+        val settings = SettingsStore(context).settings.first()
         val state = prefs.registrationState.first()
-        if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
+        val registration = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration
+        // ENABLED is only a local flag; encrypted credentials can be lost by a
+        // keystore reset/restore. Treat an incomplete V1 record as stale and
+        // re-enrol instead of permanently skipping registration on startup.
+        val incomplete = registration == null || registration.deviceId.isBlank() ||
+            registration.pushEndpoint.isBlank() || registration.deviceSecret.isNullOrBlank()
+        if (incomplete) {
+            DeviceRegistryStore(context).clear()
+            prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
+            FcmTokenRegistration.enqueueCurrent(context)
+        } else if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
     }
 
     suspend fun schedulePendingSync(context: Context) {

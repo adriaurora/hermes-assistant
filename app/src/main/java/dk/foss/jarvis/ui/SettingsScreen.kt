@@ -84,7 +84,7 @@ private val HelmBorder08 = Color(0x14FFFFFF)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onEnablePush: () -> Unit = {}) {
     val context = LocalContext.current
     val store = remember { SettingsStore(context) }
     val scope = rememberCoroutineScope()
@@ -456,7 +456,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Text(pushLabel, fontFamily = RobotoMono, fontSize = 13.sp,
                         color = if (pushState == FcmRegistrationState.DISABLED) HelmWhite35 else HelmAccentTx)
                     if (pushState == FcmRegistrationState.DISABLED) {
-                        HelmFlatButton("Enable notifications", { scope.launch { FcmLifecycle.enable(context) } }, accent = true)
+                        HelmFlatButton("Enable notifications", onEnablePush, accent = true)
                     } else {
                         HelmFlatButton("Re-register device", { FcmTokenRegistration.enqueueCurrent(context) }, accent = false)
                         HelmFlatButton("Disable notifications", { scope.launch { FcmLifecycle.disable(context) } }, accent = false)
