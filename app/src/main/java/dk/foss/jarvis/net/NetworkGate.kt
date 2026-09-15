@@ -61,11 +61,11 @@ class NetworkGate(
      * 8. No fragment (origins never include fragments)
      * 9. For HTTP only: approved in [ApprovedOriginsStore] active set
      *
-     * Canonicalisation (originIdentity) happens **only after** all validation
+     * Canonicalisation (canonicalEndpointIdentity) happens **only after** all validation
      * above has passed, so a malformed URL is never silently converted.
      *
      * @throws BlockedRequest when the URL violates policy.
-     * @return the canonical [originIdentity] string (scheme + host + port +
+     * @return the canonical [canonicalEndpointIdentity] string (scheme + host + port +
      *   path) so callers can log or cache the validated origin.
      */
     fun validate(baseUrl: String): String {

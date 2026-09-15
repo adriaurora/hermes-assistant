@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import dk.foss.jarvis.hermes.originIdentity
 import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.push.FcmLifecycle
