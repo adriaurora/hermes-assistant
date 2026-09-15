@@ -27,7 +27,7 @@ import org.junit.Test
  * Http.streaming.newBuilder() to inherit production followRedirects(false)
  * and followSslRedirects(false) while adding test-cert trust.
  *
- * No TLS bypass — no TrustManager, no hostnameVerifier, no SSLContext.
+ * No TLS bypass — no trust-all managers or hostname verification overrides.
  */
 class RedirectBlockingTest {
 

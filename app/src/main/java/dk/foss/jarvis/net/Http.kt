@@ -17,10 +17,11 @@ import java.util.concurrent.TimeUnit
  * endpoints.  The gate instance is obtained via [gate] (production) or
  * [testingGate] (JVM tests).
  *
- * The Android manifest's `usesCleartextTraffic` flag controls what the
- * *platform* allows.  In debug builds it is set to `true` so that LAN HTTP
- * is reachable once approved.  In release builds the platform blocks cleartext
- * by default — the app gate then acts as the policy boundary.
+ * The Android platform allows cleartext traffic by default; the app's
+ * *policy* boundary is the NetworkGate, which enforces the fail-closed rule:
+ * HTTPS is always allowed and HTTP is only allowed for explicitly approved
+ * endpoints.  Debug builds set `usesCleartextTraffic` to `true` so LAN HTTP
+ * is reachable once approved.
  */
 object Http {
     /** General-purpose client with bounded timeouts. No redirects — the gate
