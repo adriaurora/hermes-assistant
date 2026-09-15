@@ -48,7 +48,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        consumeTap(intent)?.let { session -> lifecycleScope.launch { ConversationRepository.get(applicationContext).open(session) } }
+        consumeTap(intent)?.let { session ->
+            // Recompose the explicit conversation route even when the launcher
+            // task was already alive; arbitrary intents never reach this path.
+            setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, initialSession = session) }
+        }
     }
 
     private fun consumeTap(intent: android.content.Intent?): String? =
