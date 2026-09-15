@@ -25,11 +25,13 @@ class SpeechInput(private val context: Context) : VoiceRecognizer {
     private var recognizer: SpeechRecognizer? = null
     private var current: VoiceRecognizer.Listener? = null
 
-    override fun isAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
+    override fun isAvailable(): Boolean = runCatching {
+        SpeechRecognizer.isRecognitionAvailable(context)
+    }.getOrDefault(false)
 
     /** Bind the recognition service ahead of time so the first listen isn't cold. */
     override fun prewarm() {
-        if (recognizer == null) createRecognizer()
+        if (recognizer == null) runCatching { createRecognizer() }
     }
 
     private val recognitionListener = object : RecognitionListener {
@@ -93,17 +95,23 @@ class SpeechInput(private val context: Context) : VoiceRecognizer {
     }
 
     private fun createRecognizer(): SpeechRecognizer? {
-        if (!isAvailable()) return null
-        val sr = if (Build.VERSION.SDK_INT >= 31 &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-        ) {
-            runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }.getOrNull()
-        } else {
+        return runCatching {
+            if (!isAvailable()) return@runCatching null
+            val sr = (if (Build.VERSION.SDK_INT >= 31 &&
+                SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+            ) {
+                runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }.getOrNull()
+            } else null) ?: SpeechRecognizer.createSpeechRecognizer(context)
+            sr.setRecognitionListener(recognitionListener)
+            recognizer = sr
+            sr
+        }.getOrElse { throwable ->
+            // OEM recognition providers can throw SecurityException,
+            // IllegalStateException, or a Binder exception during creation.
+            // Voice input is optional: report it through the normal listener
+            // path instead of allowing a coroutine/UI crash.
+            recognizer = null
             null
-        } ?: SpeechRecognizer.createSpeechRecognizer(context)
-        return sr.also {
-            it.setRecognitionListener(recognitionListener)
-            recognizer = it
         }
     }
 

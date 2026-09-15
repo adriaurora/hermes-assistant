@@ -9,8 +9,19 @@ import androidx.activity.compose.setContent
 class AssistantActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setVoiceInteractionActive(true)
         showOverLockScreen()
         setContent { JarvisApp(this@AssistantActivity, startInConversation = true) }
+    }
+
+    internal fun setVoiceInteractionActive(active: Boolean) {
+        if (active) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onDestroy() {
+        setVoiceInteractionActive(false)
+        super.onDestroy()
     }
 
     /** Only the voice conversation flow is allowed to appear over keyguard. */

@@ -20,6 +20,9 @@ data class ModelSelectionState(
     val locked: Boolean = false,
     val clearSupported: Boolean = true,
     val selectorAvailable: Boolean = false,
+    /** User's latest request, not server-confirmed until an ACK arrives. */
+    val pendingModelId: String? = null,
+    val pendingLabel: String? = null,
 )
 
 /** The actual model and route source the server is using. */
@@ -49,22 +52,35 @@ class ModelSelection {
 
     /** Called after GET /api/sessions/{id} returns the session object. */
     fun onSessionInsight(sessionModel: String?, defaultModel: String?) {
+        // A session read is authoritative and supersedes an old in-flight
+        // request (the caller may then retry it explicitly).
         if (sessionModel.isNullOrBlank()) {
-            state = state.copy(label = defaultModel?.let { "Automatic · $it" } ?: "Automatic", locked = false)
+            state = state.copy(label = defaultModel?.let { "Automatic · $it" } ?: "Automatic", locked = false,
+                pendingModelId = null, pendingLabel = null)
         } else {
-            state = state.copy(label = sessionModel, locked = true)
+            state = state.copy(label = sessionModel, locked = true, pendingModelId = null, pendingLabel = null)
         }
+    }
+
+    /** Record a request without presenting it as server-confirmed. */
+    fun onSetRequested(modelId: String, modelLabel: String) {
+        state = state.copy(pendingModelId = modelId, pendingLabel = modelLabel)
+    }
+
+    /** Record a request to return to the server's automatic route. */
+    fun onClearRequested() {
+        state = state.copy(pendingModelId = null, pendingLabel = "Automatic")
     }
 
     /** Called after a successful 200 from setSessionModel. */
     fun onSetAck(modelLabel: String, runtime: RuntimeInfo?) {
-        state = state.copy(label = modelLabel, locked = true)
+        state = state.copy(label = modelLabel, locked = true, pendingModelId = null, pendingLabel = null)
         effective = EffectiveRoute.fromRuntime(runtime)
     }
 
     /** Called after a successful 200 from clearSessionModel. */
     fun onClearAck(runtime: RuntimeInfo?) {
-        state = state.copy(label = "Automatic", locked = false)
+        state = state.copy(label = "Automatic", locked = false, pendingModelId = null, pendingLabel = null)
         effective = EffectiveRoute.fromRuntime(runtime)
     }
 
@@ -76,7 +92,7 @@ class ModelSelection {
     /** Reset per-conversation model state (label, lock, effective route) while
      *  preserving capability-derived selector availability, which is origin-scoped. */
     fun reset() {
-        state = state.copy(label = "Automatic", locked = false)
+        state = state.copy(label = "Automatic", locked = false, pendingModelId = null, pendingLabel = null)
         effective = null
     }
 

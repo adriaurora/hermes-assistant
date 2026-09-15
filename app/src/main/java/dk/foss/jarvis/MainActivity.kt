@@ -48,7 +48,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun configureWindow() {
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
@@ -87,7 +86,12 @@ internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean
                         ConversationScreen(
                             vm = cvm,
                             assistTrigger = if (startInConversation) 1 else 0,
-                            onExit = { screen = Screen.Chat },
+                            onExit = {
+                                // Only the voice entry point owns the keep-awake
+                                // flag; leaving voice must release it immediately.
+                                if (activity is AssistantActivity) activity.setVoiceInteractionActive(false)
+                                screen = Screen.Chat
+                            },
                         )
                     }
                     Screen.History -> {
