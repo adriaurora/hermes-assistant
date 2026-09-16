@@ -15,6 +15,8 @@ import dk.foss.jarvis.voice.AndroidTts
 import dk.foss.jarvis.voice.SpeechInput
 import dk.foss.jarvis.voice.TtsEngine
 import dk.foss.jarvis.voice.VoiceRecognizer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.sse.EventSource
@@ -49,6 +51,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     private var settings: JarvisSettings? = null
     private var tts: TtsEngine? = null
     private var source: EventSource? = null
+    private var activeTurnJob: Job? = null
     private var continuous = true
 
     // --- streaming-TTS pipeline ---
@@ -72,13 +75,15 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun ensureReady(): Boolean {
         return try {
-            settings ?: settingsStore.settings.first().also { settings = it }
+            settings = settingsStore.settings.first()
             if (tts == null) tts = AndroidTts(getApplication(), languageTag = null)
             if (recognizer == null) {
                 recognizer = SpeechInput(getApplication())
                 recognizer?.prewarm()
             }
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             // Speech providers are optional and several OEMs throw while they
             // bind. Keep the voice screen usable and expose a semantic error.
@@ -92,7 +97,8 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         // A conversation auto-continues: after Hermes speaks it listens again.
         continuous = true
         retriedThisTurn = false
-        viewModelScope.launch {
+        activeTurnJob?.cancel()
+        activeTurnJob = viewModelScope.launch {
             if (!ensureReady()) return@launch
             if (settings?.isConfigured != true) {
                 error.value = "Configure Hermes in Settings first."
@@ -138,9 +144,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
      * across screen visits while the shared conversation may have been replaced).
      */
     fun resetView() {
-        turn++ // invalidate any in-flight callbacks from a prior screen visit
-        runCatching { recognizer?.stop() }
-        source?.cancel(); source = null
+        stopAll()
         transcript.value = ""
         reply.value = ""
         error.value = null
@@ -197,8 +201,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         val s = settings ?: return
         val client = HermesClient(s.baseUrl, s.apiKey)
         // Resolve continuity and transport at the repository/transport boundary.
-        viewModelScope.launch {
-            when (val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey)) {
+        activeTurnJob?.cancel()
+        activeTurnJob = viewModelScope.launch {
+            val plan = resolveContinuation(repo, client, s.baseUrl, s.apiKey)
+            if (turn != myTurn) return@launch
+            when (plan) {
                 is ContinuationPlan.Blocked -> {
                     val message = when (plan.outcome) {
                         is ConversationRepository.RebindOutcome.BlockedAuth -> "Authentication failed while verifying this session."
@@ -206,19 +213,20 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                         is ConversationRepository.RebindOutcome.BlockedRetryable -> "Couldn't verify this session; try again."
                         else -> return@launch
                     }
-                    onMain { error.value = message; goIdle() }
+                    onMain { if (turn == myTurn) { error.value = message; goIdle() } }
                     return@launch
                 }
                 is ContinuationPlan.Send -> when (val d = plan.decision) {
                 is ChatTransportDecision.Blocked -> {
                     onMain {
+                        if (turn != myTurn) return@onMain
                         error.value = d.reason
                         goIdle()
                     }
                     return@launch
                 }
                 is ChatTransportDecision.Sessions -> {
-                    repo.addMessage("user", userText)
+                    repo.queueFirstTurn(userText)
                     sendSessions(client, d.features, myTurn, s.baseUrl, s.apiKey)
                 }
                 }
@@ -238,7 +246,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         when (outcome) {
             is SessionTurnStartOutcome.CreateFailed -> {
                 onMain {
-                    error.value = "Couldn't start a Hermes session: ${outcome.error.message?.take(120)}"
+                    error.value = "Couldn't start a Hermes session. Try again."
                     repo.persistAsync()
                     goIdle()
                 }
@@ -246,7 +254,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
             }
             is SessionTurnStartOutcome.LockFailed -> {
                 onMain {
-                    error.value = "Couldn't pin model to session: ${outcome.error.message?.take(120)}"
+                    error.value = "Couldn't apply the selected model. Try again."
                     repo.persistAsync()
                     goIdle()
                 }
@@ -299,8 +307,7 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                 working.value = false
                 stalled.value = false
                 toolLabel.value = null
-                val rest = sentenceBuffer.toString().trim()
-                sentenceBuffer.setLength(0)
+                val rest = SentenceSplitter.drainRemainder(sentenceBuffer)
                 if (rest.isNotEmpty()) enqueueSpeech(rest)
                 pendingText.value = ""
                 if (reply.value.isNotBlank()) repo.addMessage("assistant", reply.value)
@@ -335,6 +342,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
         val result = client.sendSessionTurn(sid, userText)
         onMain {
             if (turn != myTurn) return@onMain
+            main.removeCallbacks(idleFlush)
+            main.removeCallbacks(stallIndicator)
+            working.value = false
+            stalled.value = false
+            toolLabel.value = null
             result.fold(
                 onSuccess = { turnResult ->
                     val text = turnResult.text ?: "⚠️ No response content"
@@ -347,6 +359,8 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
                         sentenceBuffer.setLength(0)
                         sentenceBuffer.append(text)
                         extractSentences()
+                        val rest = SentenceSplitter.drainRemainder(sentenceBuffer)
+                        if (rest.isNotEmpty()) enqueueSpeech(rest)
                         streamDone = true
                         pendingText.value = ""
                         viewModelScope.launch { repo.persist() }
@@ -440,6 +454,11 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
      * Go idle WITHIN the conversation. To re-engage after a silence, tap the mic.
      */
     private fun goIdle() {
+        main.removeCallbacks(idleFlush)
+        main.removeCallbacks(stallIndicator)
+        working.value = false
+        stalled.value = false
+        toolLabel.value = null
         state.value = ConvState.Idle
     }
 
@@ -453,6 +472,8 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     fun stopAll() {
         continuous = false
         turn++
+        activeTurnJob?.cancel()
+        activeTurnJob = null
         main.removeCallbacks(idleFlush)
         main.removeCallbacks(stallIndicator)
         working.value = false
@@ -478,12 +499,8 @@ class ConversationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        main.removeCallbacks(idleFlush)
-        main.removeCallbacks(stallIndicator)
-        recognizer?.release()
-        source?.cancel()
+        stopAll()
         tts?.shutdown()
-        repo.persistAsync()
         super.onCleared()
     }
 
