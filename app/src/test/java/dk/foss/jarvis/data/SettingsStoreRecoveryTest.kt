@@ -69,13 +69,14 @@ class SettingsStoreRecoveryTest {
      */
     private fun makeStore(
         blobs: MemBlobs,
+        cipher: FakeCipher = FakeCipher(),
         hook: (suspend (JarvisSettings, JarvisSettings) -> Unit)? = null,
         gate: NetworkGate? = null,
     ): SettingsStore {
         val ds = PreferenceDataStoreFactory.create { File(tmp.newFolder(), "settings.preferences_pb") }
         return SettingsStore(
             store = ds,
-            secure = SecureStore(FakeCipher(), blobs),
+            secure = SecureStore(cipher, blobs),
             networkGate = gate,
             onConnectionChanged = hook ?: { _, _ -> },
         )
@@ -92,6 +93,15 @@ class SettingsStoreRecoveryTest {
         val settings = store.settings.first()
         assertEquals("", settings.baseUrl)
         assertEquals("", settings.apiKey)
+    }
+
+    @Test fun `present journal with keystore failure is corrupt and flow fails closed`() = runBlocking {
+        val cipher = FakeCipher(); val blobs = MemBlobs(); val store = makeStore(blobs, cipher = cipher)
+        store.updateConnection("http://a.local:8642", "secret")
+        blobs.map[SecureStore.CONN_CHANGE_JOURNAL_ALIAS] = "encrypted-journal"
+        cipher.decryptFails = true
+        assertEquals("", store.settings.first().baseUrl)
+        assertTrue(blobs.map.containsKey(SecureStore.CONN_CHANGE_JOURNAL_ALIAS))
     }
 
     // ─── 2. Update succeeds → journal cleared ───────────────────────────────
@@ -187,6 +197,7 @@ class SettingsStoreRecoveryTest {
             newUrl = "http://b.local:8642",
             operation = JournalBlob.OP_REPLACE,
             newToken = "tok2",
+            phase = "DATASTORE_APPLIED",
         )
         blobs.map["hermes_conn_journal"] = cipher.encrypt(JournalBlob.toJson(journal))
 

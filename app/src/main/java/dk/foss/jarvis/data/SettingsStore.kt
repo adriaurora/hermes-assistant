@@ -320,9 +320,9 @@ class SettingsStore internal constructor(
         secure.clearConnectionChangeJournalSync()
     }
     private fun markDataStoreApplied(oldUrl: String, newUrl: String, operation: String, token: String?) {
-        beginJournal(oldUrl, newUrl, operation, token) // replace is a confirmed sync commit
-        val current = secure.loadConnectionChangeJournal() ?: return
-        val parsed = JournalBlob.fromJson(current) ?: return
+        val current = (secure.readConnectionChangeJournal() as? SecureStore.JournalRead.Readable)?.payload
+            ?: throw FailClosedException("Journal disappeared before phase update")
+        val parsed = JournalBlob.fromJson(current) ?: throw FailClosedException("Corrupt journal")
         secure.saveConnectionChangeJournalSync(JournalBlob.toJson(parsed.copy(phase = "DATASTORE_APPLIED")))
     }
 
@@ -354,8 +354,11 @@ class SettingsStore internal constructor(
      * Internal journal recovery logic (must be called inside recoveryMutex).
      */
     private suspend fun recoverJournal() {
-        val blob = runCatching { secure.loadConnectionChangeJournal() }.getOrNull()
-        val parsed = blob?.let { JournalBlob.fromJson(it) } ?: if (blob != null) throw FailClosedException("Corrupt journal") else return
+        val parsed = when (val read = secure.readConnectionChangeJournal()) {
+            SecureStore.JournalRead.Absent -> return
+            SecureStore.JournalRead.Corrupt -> throw FailClosedException("Corrupt journal")
+            is SecureStore.JournalRead.Readable -> JournalBlob.fromJson(read.payload) ?: throw FailClosedException("Corrupt journal")
+        }
 
         val oldUrl = parsed.oldUrl
         val newUrl = parsed.newUrl
@@ -367,20 +370,12 @@ class SettingsStore internal constructor(
         val urlMatchOld = currentRaw == oldUrl
         val urlMatchNew = currentRaw == newUrl
 
-        if (urlMatchOld && !urlMatchNew) {
+        if (parsed.phase == "STAGED" && urlMatchOld) {
             // ── DataStore write never happened ────────────────────────
             // Old URL is still present. Roll back: restore old token
             // in KEEP case (journal stored the old token via importOnce).
-            if (operation == "KEEP") {
-                // The token was not supposed to change; if SecureStore
-                // has been cleared (e.g. Keystore reset), re-import it
-                // from the DataStore legacy key.
-                try {
-                    secure.importOnce(store.data.first()[Keys.API_KEY])
-                } catch (_: Exception) { /* best-effort */ }
-            }
             clearJournal()
-        } else if (!urlMatchOld && urlMatchNew) {
+        } else if (parsed.phase == "DATASTORE_APPLIED" && urlMatchNew) {
             // ── DataStore was updated ─────────────────────────────────
             // Need to ensure SecureStore has the correct token.
             try {

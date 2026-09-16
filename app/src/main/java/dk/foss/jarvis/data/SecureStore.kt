@@ -116,6 +116,7 @@ class SecureStore internal constructor(
     private val cipher: AeadCipher,
     private val blobs: SecretBlobStore,
 ) {
+    sealed interface JournalRead { data object Absent : JournalRead; data class Readable(val payload: String) : JournalRead; data object Corrupt : JournalRead }
 
     /** Current token, or null if none is stored / the blob is undecryptable. */
     fun loadToken(): String? =
@@ -191,6 +192,10 @@ class SecureStore internal constructor(
      * so callers can treat it as "no journal present."
      */
     fun loadConnectionChangeJournal(): String? = loadSecret(CONN_CHANGE_JOURNAL_ALIAS)
+    fun readConnectionChangeJournal(): JournalRead {
+        val raw = blobs.get(CONN_CHANGE_JOURNAL_ALIAS) ?: return JournalRead.Absent
+        return cipher.decrypt(raw)?.takeIf { it.isNotEmpty() }?.let { JournalRead.Readable(it) } ?: JournalRead.Corrupt
+    }
 
     /** Remove the connection-change journal entry. */
     fun clearConnectionChangeJournal() {
