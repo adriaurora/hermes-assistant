@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
      */
     private suspend fun consumeTap(intent: android.content.Intent?): TapResult? {
         if (intent?.action != HERMES_NOTIFICATION_TAP || intent.`package` != packageName) return null
-            val token = intent.getStringExtra("tap_token") ?: return null
+        val token = intent.getStringExtra("tap_token") ?: return null
             val origin = runCatching { dk.foss.jarvis.data.SettingsStore(this).settings.first() }
                 .getOrNull()?.let { s -> if (s.isConfigured) originIdentity(s.baseUrl, s.apiKey) else "" } ?: ""
             NotificationTapStore.consume(this, token, origin)
