@@ -6,7 +6,7 @@ It replaces the device's default digital assistant (long-press the power
 button) and gives you streaming voice conversations plus normal chat — all
 powered by *your* Hermes instance. No wake word, no always-on microphone.
 
-The app talks to **one thing only: your Hermes `api_server`**. Chat and voice use
+The app sends chat requests to **your Hermes `api_server`**. Chat and voice use
 the Sessions API; each conversation is backed by a server-side Hermes session.
 When push is enabled, the optional `hermes_assistant` plugin provides the Wire
 Protocol event endpoint. No companion server, no sidecar — point it at your
@@ -17,10 +17,11 @@ Hermes URL + API key and go.
 - 💬 **Streaming chat** with your Hermes agent (sessions via `X-Hermes-Session-Id`).
 - 🎙️ **Voice conversation mode** — speak, Hermes thinks and replies aloud, then listens again.
 - 🤖 **Default digital assistant** — launch with the long-press / assist gesture.
-- 🔊 Android's built-in offline TTS and on-device speech recognition where available.
+- 🔊 Android speech recognition and text-to-speech, using on-device recognition where available.
 - 🔒 **Private by design**: credentials are encrypted with AndroidKeyStore AES-256-GCM
   and backups are disabled. FCM is the optional third-party wake transport; no
-  third-party voice or AI/cloud provider receives conversation content.
+  app-managed voice backend is used. The system speech provider may process audio
+  or speech text online; Hermes may also use the AI providers configured on your server.
 - 🔔 **FCM event notifications** — Hermes sends a data-only wake with an opaque `event_id`;
   the app fetches content over the authenticated Hermes API and posts a native
   notification. Push sees only an opaque event ID, never reminder or conversation text.
@@ -167,7 +168,7 @@ Android (Sessions)                    Hermes server                  FCM push
 | `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private SharedPreferences. |
 | `data/SettingsStore` | Base URL, API key, and approved HTTP origins (single DataStore source of truth). |
 | `voice/SpeechInput` | STT via Android `SpeechRecognizer` (on-device where available). |
-| `voice/TtsEngine` | Android's built-in offline TTS. |
+| `voice/TtsEngine` | Android TTS; offline availability depends on the selected engine and voice. |
 | `ui/ConversationViewModel` | The listen → think → speak → listen loop. |
 | `ui/SettingsScreen` | Connection settings, **blocking** HTTP consent dialog with exact Spanish warnings, approved origins list with "Dejar de permitir HTTP para este servidor" revoke. |
 | `assist/*` | `VoiceInteractionService` so the app can be the default assistant. |
@@ -190,8 +191,9 @@ Stack: Kotlin + Jetpack Compose, minSdk 29 / target 34.
   the blocking dialog in Settings.
 - FCM notifications require matching Firebase config and the optional
   `hermes_assistant` plugin; see [FCM setup](docs/fcm-setup.md).
-- Tapping a notification opens the ordinary main screen; `MainActivity` deliberately
-  ignores notification extras and does not deep-link to or auto-start a conversation.
+- A valid notification tap opens the matching Hermes session in text chat via a
+  private, one-shot token. Arbitrary launcher extras are ignored. Notification taps
+  do not start the microphone.
 - Self-signed or otherwise untrusted HTTPS certificates are **not** automatically
   accepted — the platform TLS stack rejects them.
 
