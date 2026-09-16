@@ -33,16 +33,23 @@ class ConversationRepository internal constructor(private val store: Conversatio
         }
 
     suspend fun recordPendingModelIntent(intent: PendingModelIntent?) = lifecycleMutex.withLock {
-        pendingIntent = intent
         if (intent == null) store.clearPendingModelIntent(activeId)
         else store.savePendingModelIntent(activeId, intent.toStored())
         store.saveActiveId(activeId)
+        pendingIntent = intent
     }
 
-    suspend fun consumePendingModelIntentDurably(expected: PendingModelIntent) = lifecycleMutex.withLock {
-        if (pendingIntent == expected) {
-            pendingIntent = null
+    suspend fun consumePendingModelIntentDurably(
+        expected: PendingModelIntent,
+        conversationId: String = activeId,
+    ) = lifecycleMutex.withLock {
+        if (activeId == conversationId && pendingIntent == expected) {
+            // Save the server binding before deleting the only durable record of
+            // the user's choice. A crash then restores either the pending intent
+            // or the session whose model operation was already acknowledged.
+            persistLocked()
             store.clearPendingModelIntent(activeId)
+            pendingIntent = null
         }
     }
 
@@ -92,7 +99,13 @@ class ConversationRepository internal constructor(private val store: Conversatio
     val activeConversationId: String get() = activeId
     private var title: String = ""
     private var createdAt: Long = System.currentTimeMillis()
-    @Volatile private var dirty = false
+    private val persistenceRevision = PersistenceRevision()
+    private var dirty: Boolean
+        get() = persistenceRevision.isDirty
+        set(value) {
+            if (value) persistenceRevision.changed()
+            else persistenceRevision.saved(persistenceRevision.current)
+        }
 
     fun startNew() {
         activeId = UUID.randomUUID().toString()
@@ -262,6 +275,8 @@ class ConversationRepository internal constructor(private val store: Conversatio
 
     private suspend fun persistLocked() {
         if (!dirty) return
+        val savedId = activeId
+        val revision = persistenceRevision.current
         store.save(
             Conversation(
                 id = activeId,
@@ -276,9 +291,8 @@ class ConversationRepository internal constructor(private val store: Conversatio
             ),
         )
         store.saveActiveId(activeId)
-        // Only clear after store.save has returned successfully. A failed write
-        // deliberately leaves the repository dirty for a later retry.
-        dirty = false
+        // A delta arriving while IO was suspended must remain dirty.
+        if (activeId == savedId) persistenceRevision.saved(revision)
     }
 
     /** Fire-and-forget save on the app-lifetime scope (safe to call at teardown). */
@@ -288,10 +302,14 @@ class ConversationRepository internal constructor(private val store: Conversatio
 
     suspend fun list(): List<ConversationMeta> = store.list()
 
-    suspend fun delete(id: String) {
+    suspend fun delete(id: String) = lifecycleMutex.withLock {
         E2eLog.log("delete id=$id")
         store.delete(id)
-        if (id == activeId) startNew()
+        store.clearPendingModelIntent(id)
+        if (id == activeId) {
+            startNew()
+            store.saveActiveId(activeId)
+        }
     }
 
 

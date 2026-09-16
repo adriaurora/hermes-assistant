@@ -55,7 +55,7 @@ class ConversationStore {
 
     /** All conversations as lightweight metadata, newest first. */
     suspend fun list(): List<ConversationMeta> = withContext(Dispatchers.IO) {
-        (dir.listFiles { f -> f.extension == "json" } ?: emptyArray())
+        (dir.listFiles { f -> f.extension == "json" && !f.name.startsWith("pending-") } ?: emptyArray())
             .mapNotNull { f ->
                 try {
                     val c = decodeConversation(f.readText()) ?: return@mapNotNull null
@@ -98,7 +98,10 @@ class ConversationStore {
         if (!file.isFile) return@withContext null
         runCatching { json.decodeFromString(PendingModelDraft.serializer(), file.readText()).takeIf { it.conversationId == id }?.intent }.getOrNull()
     }
-    suspend fun clearPendingModelIntent(id: String) = withContext(Dispatchers.IO) { File(dir, "pending-$id.json").delete() }
+    suspend fun clearPendingModelIntent(id: String) = withContext(Dispatchers.IO) {
+        val file = File(dir, "pending-$id.json")
+        if (file.exists() && !file.delete()) error("Unable to clear pending model selection")
+    }
 
     private fun decodeConversation(raw: String): Conversation? {
         return try { json.decodeFromString(Conversation.serializer(), raw) }
