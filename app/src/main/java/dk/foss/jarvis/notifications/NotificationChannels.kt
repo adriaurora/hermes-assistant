@@ -95,15 +95,16 @@ object NotificationTapStore {
     }
 
     private fun validateTap(value: String, currentOrigin: String): TapResult {
-        val parts = value.split(SEPARATOR)
-        if (parts.size < 3) return TapResult.StaleOrigin
-        val tapOrigin = parts[0]
-        if (tapOrigin != currentOrigin) return TapResult.StaleOrigin
-        val sessionId = parts[2]
-        return sessionId.takeIf { it.isNotBlank() }
-            ?.let { TapResult.Valid(it, tapOrigin) }
-            ?: TapResult.NotFound
+        return parseNotificationTap(value, currentOrigin)
     }
+}
+
+/** Pure validation entry point used by JVM tests and the store itself. */
+internal fun parseNotificationTap(value: String, currentOrigin: String): TapResult {
+    val parts = value.split('\u0000')
+    if (parts.size < 3) return TapResult.StaleOrigin
+    if (parts[0] != currentOrigin) return TapResult.StaleOrigin
+    return parts[2].takeIf { it.isNotBlank() }?.let { TapResult.Valid(it, parts[0]) } ?: TapResult.NotFound
 }
 
 fun ensureReminderChannel(context: Context) {
