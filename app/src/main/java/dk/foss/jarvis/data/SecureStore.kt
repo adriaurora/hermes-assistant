@@ -34,6 +34,7 @@ interface SecretBlobStore {
     /** Persist before returning. Implementations must not expose a partial value. */
     fun putSync(alias: String, blob: String) = put(alias, blob)
     fun remove(alias: String)
+    fun removeSync(alias: String) = remove(alias)
 }
 
 /** Real crypto: AES-256-GCM, key generated inside AndroidKeyStore. */
@@ -97,6 +98,9 @@ class PrefsBlobStore(context: Context) : SecretBlobStore {
     override fun remove(alias: String) {
         prefs.edit().remove(alias).apply()
     }
+    override fun removeSync(alias: String) {
+        check(prefs.edit().remove(alias).commit()) { "Unable to remove secure blob" }
+    }
 
     private companion object {
         const val FILE = "hermes_secure"
@@ -112,6 +116,7 @@ class SecureStore internal constructor(
     private val cipher: AeadCipher,
     private val blobs: SecretBlobStore,
 ) {
+    sealed interface JournalRead { data object Absent : JournalRead; data class Readable(val payload: String) : JournalRead; data object Corrupt : JournalRead }
 
     /** Current token, or null if none is stored / the blob is undecryptable. */
     fun loadToken(): String? =
@@ -124,6 +129,8 @@ class SecureStore internal constructor(
     fun clearToken() {
         blobs.remove(TOKEN_ALIAS)
     }
+    fun saveTokenSync(value: String) = blobs.putSync(TOKEN_ALIAS, cipher.encrypt(value))
+    fun clearTokenSync() = blobs.removeSync(TOKEN_ALIAS)
 
     fun loadDeviceId(): String? = loadSecret(DEVICE_ID_ALIAS)
     fun saveDeviceId(value: String) = saveSecret(DEVICE_ID_ALIAS, value)
@@ -165,6 +172,37 @@ class SecureStore internal constructor(
         blobs.putSync(DEVICE_REGISTRATION_ALIAS, cipher.encrypt("0"))
     }
 
+    // ─── Connection change journal (R03) ────────────────────────────────────
+
+    /**
+     * Persist an encrypted connection-change journal entry synchronously.
+     * The plain-text JSON is encrypted via [AeadCipher.encrypt] and committed
+     * via [SecretBlobStore.putSync] (SharedPreferences `commit()`), guaranteeing
+     * durability before the method returns.
+     *
+     * @throws IllegalStateException if the synchronous write fails.
+     */
+    fun saveConnectionChangeJournalSync(jsonPlain: String) {
+        blobs.putSync(CONN_CHANGE_JOURNAL_ALIAS, cipher.encrypt(jsonPlain))
+    }
+
+    /**
+     * Load (decrypt) the connection-change journal.  Returns `null` when no
+     * journal blob exists.  Decryption failure (corrupted blob) also returns `null`
+     * so callers can treat it as "no journal present."
+     */
+    fun loadConnectionChangeJournal(): String? = loadSecret(CONN_CHANGE_JOURNAL_ALIAS)
+    fun readConnectionChangeJournal(): JournalRead {
+        val raw = blobs.get(CONN_CHANGE_JOURNAL_ALIAS) ?: return JournalRead.Absent
+        return cipher.decrypt(raw)?.takeIf { it.isNotEmpty() }?.let { JournalRead.Readable(it) } ?: JournalRead.Corrupt
+    }
+
+    /** Remove the connection-change journal entry. */
+    fun clearConnectionChangeJournal() {
+        blobs.remove(CONN_CHANGE_JOURNAL_ALIAS)
+    }
+    fun clearConnectionChangeJournalSync() = blobs.removeSync(CONN_CHANGE_JOURNAL_ALIAS)
+
     private fun loadSecret(alias: String): String? = blobs.get(alias)?.let { cipher.decrypt(it) }?.takeIf { it.isNotEmpty() }
     private fun saveSecret(alias: String, value: String) { blobs.put(alias, cipher.encrypt(value)) }
 
@@ -188,6 +226,9 @@ class SecureStore internal constructor(
         internal const val ORIGIN_ALIAS = "hermes_push_origin"
         internal const val PUSH_API_KEY_ALIAS = "hermes_push_api_key"
         internal const val DEVICE_REGISTRATION_ALIAS = "hermes_device_registration_v1"
+
+        /** Alias for the encrypted connection-change journal blob.  Not public. */
+        internal const val CONN_CHANGE_JOURNAL_ALIAS = "hermes_conn_journal"
 
         @Volatile
         private var instance: SecureStore? = null

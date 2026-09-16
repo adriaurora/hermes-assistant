@@ -10,6 +10,7 @@ import dk.foss.jarvis.events.NotificationDeduper
 import dk.foss.jarvis.hermes.EventRpcClient
 import dk.foss.jarvis.hermes.EventFetchException
 import dk.foss.jarvis.hermes.HermesHttpException
+import dk.foss.jarvis.hermes.originIdentity
 import dk.foss.jarvis.data.DeviceRegistration
 import dk.foss.jarvis.data.RegistryState
 import dk.foss.jarvis.notifications.EventDispatcher
@@ -61,7 +62,10 @@ object PushIngress {
             onReserved = { prefs.reserveDelivered(it) },
             onDeliveryRejected = { prefs.clearReserved(it) }, notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) DeliveryOutcome.PERMISSION_DENIED
-            else runCatching { postReminderNotification(context, envelope, id) }
+            else runCatching {
+                val origin = originIdentity(settings.baseUrl, settings.apiKey)
+                postReminderNotification(context, envelope, id, origin)
+            }
                 .fold({ DeliveryOutcome.SUCCESS }, { DeliveryOutcome.POST_FAILURE })
         }))
         return gate.handlePull(eventId)
@@ -86,7 +90,8 @@ object PushIngress {
             expectedDeviceId = device.deviceId,
             notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
-            postReminderNotification(context, envelope, id); delivered++
+            val origin = originIdentity(settings.baseUrl, settings.apiKey)
+            postReminderNotification(context, envelope, id, origin); delivered++
         }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
     }
@@ -108,7 +113,8 @@ object PushIngress {
             expectedDeviceId = device.deviceId,
             notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
-            postReminderNotification(context, envelope, id)
+            val origin = originIdentity(settings.baseUrl, settings.apiKey)
+            postReminderNotification(context, envelope, id, origin)
         }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync()
     }
@@ -184,12 +190,19 @@ object PushIngress {
         Log.i("HermesPush", "push registration cleared")
     }
 
+    /**
+     * Non-destructive check: verify that a notification intent token is valid
+     * without consuming it.  This is called by push ingress before the actual
+     * notification is handled; the real consumption happens in MainActivity.
+     */
     suspend fun fromNotificationIntent(context: Context, intent: Intent): Boolean {
-        // Legacy callers cannot route arbitrary extras. Only the one-shot
-        // capability issued by postReminderNotification is accepted.
         if (intent.action != dk.foss.jarvis.notifications.HERMES_NOTIFICATION_TAP ||
             intent.`package` != context.packageName) return false
         val token = intent.getStringExtra("tap_token") ?: return false
-        return dk.foss.jarvis.notifications.NotificationTapStore.consume(context, token) != null
+        val settings = SettingsStore(context).settings.first()
+        val currentOrigin = if (settings.isConfigured) originIdentity(settings.baseUrl, settings.apiKey) else ""
+        return dk.foss.jarvis.notifications.NotificationTapStore.peek(
+            context, token, currentOrigin
+        ) is dk.foss.jarvis.notifications.TapResult.Valid
     }
 }

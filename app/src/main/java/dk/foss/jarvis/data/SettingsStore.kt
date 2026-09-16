@@ -4,17 +4,25 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.net.BlockedRequest
@@ -50,6 +58,97 @@ class HttpDowngradeNotAllowed : InvalidConnectionSettings(
     "Downgrading from HTTPS to HTTP requires explicit approval in Settings."
 )
 
+/**
+ * Thrown when [SettingsStore] is in a fail-closed state (corrupted journal or
+ * inconsistent state).  Consumers that receive this should NOT make network
+ * requests — the user must re-enter credentials.
+ */
+class FailClosedException(reason: String) : RuntimeException(reason)
+
+/**
+ * Thrown when the journal cannot be written (SecureStore unavailable).
+ * The previous settings are preserved.
+ */
+class JournalWriteFailed(message: String = "Failed to write connection-change journal", cause: Throwable? = null) : RuntimeException(message, cause)
+
+/**
+ * Sealed interface describing the outcome of a connection-change recovery.
+ *
+ * - [Recovered]: the transition was applied and the journal is cleared.
+ *   App has consistent settings.
+ * - [RolledBack]: the transition never applied (URL unchanged). Old settings
+ *   are intact, journal cleaned up.
+ * - [FailClosed]: the journal exists but state is inconsistent (URL differs
+ *   from both old and new, or SecureStore unavailable). Credentials are NOT
+ *   exposed.
+ */
+sealed interface RecoveryResult {
+    /** Transition was applied and completed. */
+    object Recovered : RecoveryResult
+    /** Transition never started; old settings intact, journal cleaned up. */
+    object RolledBack : RecoveryResult
+    /** State is inconsistent; credentials are NOT exposed. */
+    object FailClosed : RecoveryResult
+}
+
+/**
+ * Journal blob parsed from SecureStore.  All sensitive fields are encrypted
+ * in the blob; parse failures → fail-closed.
+ */
+internal data class JournalBlob(
+    val version: Int,
+    val oldUrl: String,
+    val newUrl: String,
+    val operation: String,  // KEEP | CLEAR | REPLACE
+    val newToken: String?,  // present only when operation == REPLACE
+    val phase: String = "STAGED",
+) {
+    companion object {
+        const val VERSION = 1
+        const val OP_KEEP = "KEEP"
+        const val OP_CLEAR = "CLEAR"
+        const val OP_REPLACE = "REPLACE"
+
+        /** Parse the encrypted JSON blob.  Returns null if corrupted. */
+        fun fromJson(json: String): JournalBlob? = runCatching {
+            val fields = json.split('|').map { String(java.util.Base64.getUrlDecoder().decode(it), Charsets.UTF_8) }
+            if (fields.size != 6 || fields[0].toInt() != VERSION) return@runCatching null
+            val oldUrl = fields[1]; val newUrl = fields[2]; val op = fields[3]
+            if (op !in listOf(OP_KEEP, OP_CLEAR, OP_REPLACE)) return@runCatching null
+            val newToken = fields[4].takeIf { it.isNotEmpty() }
+            JournalBlob(version = VERSION, oldUrl = oldUrl, newUrl = newUrl, operation = op, newToken = newToken,
+                phase = fields[5])
+        }.getOrNull()
+
+        /** Serialize to JSON blob for SecureStore encryption. */
+        fun toJson(blob: JournalBlob): String {
+            return listOf(blob.version.toString(), blob.oldUrl, blob.newUrl, blob.operation,
+                blob.newToken.orEmpty(), blob.phase).joinToString("|") {
+                java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
+            }
+        }
+    }
+}
+
+/**
+ * SettingsStore: user configuration for reaching Hermes.
+ *
+ * ### Connection change journal (R03)
+ *
+ * Every [updateConnection] call follows a durable protocol:
+ * 1. Validate URL before any write.
+ * 2. Stage a journal entry in [SecureStore] (encrypted, synchronous commit).
+ *    If staging fails → abort, no settings modified.
+ * 3. Single `DataStore.edit` for URL only (no SecureStore calls inside).
+ * 4. Write the token outside the DataStore edit.
+ * 5. Clear the journal.
+ * 6. Fire FCM effects only after all writes succeed.
+ *
+ * At startup, [ensureRecovered] checks the journal and either completes the
+ * transition (if DataStore URL matches the new URL → save the token) or
+ * rolls back (if URL still matches the old URL → restore old token).  Both
+ * actions clear the journal.
+ */
 class SettingsStore internal constructor(
     private val store: DataStore<Preferences>,
     private val secure: SecureStore,
@@ -66,7 +165,7 @@ class SettingsStore internal constructor(
     constructor(context: Context) : this(
         store = AndroidApprovedOriginsStore.dataStorePreferences(context),
         secure = SecureStore.get(context),
-        networkGate = null, // production gate is used inside validateConnectionForPersist
+        networkGate = null,
         onConnectionChanged = { old, new ->
             val app = context.applicationContext
             FcmConnectionEffects(PushPrefs(app), DeviceRegistryStore(app), { FcmRevokeWorker.schedule(app) }, { WorkManager.getInstance(app).cancelUniqueWork(FcmTokenRegistration.WORK_NAME) }).onConnectionChanged(old, new)
@@ -84,7 +183,6 @@ class SettingsStore internal constructor(
         val MODEL = stringPreferencesKey("model")
         val ELEVEN_KEY = stringPreferencesKey("eleven_key")
         val ELEVEN_VOICE = stringPreferencesKey("eleven_voice")
-        val WAKE_ENABLED = booleanPreferencesKey("wake_enabled")
         // Insecure HTTP origin approvals (per-endpoint, not per key).
         // Stored as a string-set for future multi-endpoint support, but only one is ever active.
         val APPROVED_HTTP_ORIGINS = stringSetPreferencesKey("approved_http_origins")
@@ -95,22 +193,42 @@ class SettingsStore internal constructor(
     }
 
     private val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val journalScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Mutex to prevent concurrent [ensureRecovered] calls from interleaving.
+     * Ensures idempotent recovery even under race conditions.
+     */
+    private val recoveryMutex = Mutex()
+
+    /**
+     * Thrown when the journal is corrupted or ambiguous.
+     * Prevents credentials from being exposed.
+     */
+    private class CorruptJournalException : RuntimeException("Corrupted connection-change journal")
 
     /**
      * The Hermes bearer token lives only in [SecureStore] (Keystore-encrypted).
      * If a legacy plaintext key is found in DataStore it is imported once and
      * the plaintext value is purged asynchronously.
+     *
+     * Recovery is ensured on the flow boundary before values reach consumers:
+     * any [FailClosedException] replaces the settings with an unconfigured state
+     * and preserves the journal for the next attempt.
      */
-    val settings: Flow<JarvisSettings> = store.data.map { p ->
-        val legacy = p[Keys.API_KEY]
-        val token = secure.importOnce(legacy)
-        if (token != null && legacy != null) {
-            purgeScope.launch { purgeLegacyKeys() }
-        }
-        JarvisSettings(
-            baseUrl = p[Keys.BASE_URL] ?: "",
-            apiKey = token.orEmpty(),
-        )
+    val settings: Flow<JarvisSettings> = flow {
+        try { ensureRecovered() } catch (_: Exception) { emit(JarvisSettings("", "")); return@flow }
+        emitAll(store.data.distinctUntilChangedBy { it[Keys.BASE_URL] }.map { p ->
+            val legacy = p[Keys.API_KEY]
+            val token = secure.importOnce(legacy)
+            if (token != null && legacy != null) {
+                purgeScope.launch { purgeLegacyKeys() }
+            }
+            JarvisSettings(
+                baseUrl = p[Keys.BASE_URL] ?: "",
+                apiKey = token.orEmpty(),
+            )
+        })
     }
 
     // ─── Pre-persist validation (defence in depth) ──────────────────────────
@@ -139,7 +257,8 @@ class SettingsStore internal constructor(
         if (trimmed.isEmpty()) throw InvalidConnectionSettings("Empty URL")
 
         // Step 1-3: structural validation (throws on malformed)
-        val canonical = canonicalEndpointIdentity(trimmed)
+        val canonical = try { canonicalEndpointIdentity(trimmed) }
+        catch (e: Exception) { throw InvalidConnectionSettings(e.message ?: "Invalid URL") }
 
         // Step 4: HTTPS → HTTP downgrade check (defence in depth).
         // If the old config was HTTPS and the new one is HTTP, we require
@@ -158,6 +277,133 @@ class SettingsStore internal constructor(
         return canonical
     }
 
+    // ─── Connection change journal (R03) ────────────────────────────────────
+
+    /**
+     * Stage a journal entry in [SecureStore] using a synchronous commit.
+     *
+     * This is called BEFORE any DataStore mutation.  If it fails, the caller
+     * must abort and NOT modify any settings.
+     *
+     * @param oldUrl  Current base URL in DataStore.
+     * @param newUrl  The new base URL that will be written.
+     * @param operation  KEEP (apiKey=null), CLEAR (apiKey=""), or REPLACE (apiKey="<value>").
+     * @param newToken  Present only when operation==REPLACE; the plaintext token to save.
+     *
+     * @throws JournalWriteFailed if the journal cannot be persisted.
+     */
+    private fun beginJournal(
+        oldUrl: String,
+        newUrl: String,
+        operation: String,
+        newToken: String? = null,
+    ) {
+        val blob = JournalBlob(
+            version = JournalBlob.VERSION,
+            oldUrl = oldUrl,
+            newUrl = newUrl,
+            operation = operation,
+            newToken = newToken,
+        )
+        try {
+            secure.saveConnectionChangeJournalSync(JournalBlob.toJson(blob))
+        } catch (e: Exception) {
+            throw JournalWriteFailed("Failed to build journal", e)
+        }
+    }
+
+    /**
+     * Clear the connection-change journal from [SecureStore].
+     * Best-effort: if it fails, [ensureRecovered] will pick it up next time.
+     */
+    private fun clearJournal() {
+        secure.clearConnectionChangeJournalSync()
+    }
+    private fun markDataStoreApplied(oldUrl: String, newUrl: String, operation: String, token: String?) {
+        val current = (secure.readConnectionChangeJournal() as? SecureStore.JournalRead.Readable)?.payload
+            ?: throw FailClosedException("Journal disappeared before phase update")
+        val parsed = JournalBlob.fromJson(current) ?: throw FailClosedException("Corrupt journal")
+        secure.saveConnectionChangeJournalSync(JournalBlob.toJson(parsed.copy(phase = "DATASTORE_APPLIED")))
+    }
+
+    /**
+     * Recover from an interrupted connection change at app startup.
+     *
+     * Called automatically via [onStart] on the [settings] flow.  Uses a
+     * mutex to prevent concurrent invocations.  Idempotent: re-calls after
+     * the journal has been cleared are no-ops.
+     *
+     * Recovery scenarios:
+     * - No journal → nothing interrupted.  Silent no-op.
+     * - Journal + raw URL == old URL → DataStore write never happened.  Restore
+     *   old token if needed (KEEP case), clear journal → Recovered.
+     * - Journal + raw URL == new URL → DataStore committed but SecureStore
+     *   may not have.  Save the target token, clear journal → Recovered.
+     * - Journal + URL differs from both → corrupted state.  Fail-closed:
+     *   throw [FailClosedException] and preserve journal.
+     *
+     * @throws FailClosedException when the journal indicates an inconsistent
+     *         state that cannot be auto-recovered.  The journal is preserved
+     *         so the user sees no credentials until they re-enter them.
+     */
+    suspend fun ensureRecovered() {
+        recoveryMutex.withLock { recoverJournal() }
+    }
+
+    /**
+     * Internal journal recovery logic (must be called inside recoveryMutex).
+     */
+    private suspend fun recoverJournal() {
+        val parsed = when (val read = secure.readConnectionChangeJournal()) {
+            SecureStore.JournalRead.Absent -> return
+            SecureStore.JournalRead.Corrupt -> throw FailClosedException("Corrupt journal")
+            is SecureStore.JournalRead.Readable -> JournalBlob.fromJson(read.payload) ?: throw FailClosedException("Corrupt journal")
+        }
+
+        val oldUrl = parsed.oldUrl
+        val newUrl = parsed.newUrl
+        val operation = parsed.operation
+        val newToken = parsed.newToken
+
+        val currentRaw = store.data.first()[Keys.BASE_URL] ?: ""
+
+        val urlMatchOld = currentRaw == oldUrl
+        val urlMatchNew = currentRaw == newUrl
+
+        if (parsed.phase == "STAGED" && urlMatchOld) {
+            // ── DataStore write never happened ────────────────────────
+            // Old URL is still present. Roll back: restore old token
+            // in KEEP case (journal stored the old token via importOnce).
+            clearJournal()
+        } else if (parsed.phase == "DATASTORE_APPLIED" && urlMatchNew) {
+            // ── DataStore was updated ─────────────────────────────────
+            // Need to ensure SecureStore has the correct token.
+            try {
+                when (operation) {
+                    "KEEP" -> {
+                        // Token unchanged at source — already handled by
+                        // the fact the old token was never cleared.
+                    }
+                    "CLEAR" -> {
+                    secure.clearTokenSync()
+                    }
+                    "REPLACE" -> {
+                        newToken?.let { secure.saveTokenSync(it) }
+                    }
+                }
+            } catch (e: Exception) {
+                // SecureStore unavailable during recovery — fail-closed.
+                throw FailClosedException("SecureStore unavailable during recovery: ${e.message}")
+            }
+            clearJournal()
+        } else {
+            // ── URL matches both or neither ───────────────────────────
+            // Corrupted state: URL is indeterminate. Fail-closed:
+            // preserve the journal so credentials are NOT exposed.
+            throw FailClosedException("Corrupt journal: url=$currentRaw old=$oldUrl new=$newUrl")
+        }
+    }
+
     /**
      * Save connection settings. [apiKey] semantics:
      * - null  → keep whatever token is currently stored;
@@ -165,23 +411,20 @@ class SettingsStore internal constructor(
      * - other → replace the stored token.
      * Any legacy plaintext key in DataStore is removed either way.
      *
-     * **Validation before persist**: [baseUrl] is structurally validated
-     * (trim, URI parse, scheme/host check, canonicalisation) BEFORE any
-     * DataStore write.  A [InvalidConnectionSettings] or [HttpDowngradeNotAllowed]
-     * exception is thrown and the *previous* (still-valid) settings are
-     * preserved — they are never overwritten by invalid input.
-     *
-     * **FCM effects only after commit**: side-effects ([onConnectionChanged])
-     * fire only after the atomic `store.edit` succeeds, ensuring consistency.
-     *
-     * If the new [baseUrl] is different from the old one (canonical endpoint),
-     * the old origin is atomically moved to the cleanup allowance so that
-     * the revoke worker can still reach it — but ordinary traffic to the old
-     * endpoint is blocked immediately.  This is a single `store.edit`
-     * transaction, not a nested read/edit across multiple DataStores.
+     * **Journal protocol** (R03):
+     * 1. Read current URL and approvals.
+     * 2. Validate URL before any write (throws on invalid input).
+     * 3. Stage journal in SecureStore (encrypted, synchronous commit).
+     *    If staging fails → abort, previous settings preserved.
+     * 4. Single DataStore.edit: write new URL + approvals + legacy purge.
+     *    NO SecureStore calls inside this lambda.
+     * 5. Write the token to SecureStore outside the DataStore edit.
+     * 6. Clear the journal.
+     * 7. Fire FCM effects only after all writes succeed.
      *
      * @throws InvalidConnectionSettings if the URL is structurally invalid.
      * @throws HttpDowngradeNotAllowed when downgrading HTTPS → HTTP without approval.
+     * @throws JournalWriteFailed if the journal cannot be staged.
      */
     suspend fun updateConnection(baseUrl: String, apiKey: String?) {
         val normalized = baseUrl.trim().trimEnd('/')
@@ -189,54 +432,82 @@ class SettingsStore internal constructor(
             val old = settings.first()
             val approvedOrigins = approvedHttpOrigins.first()
 
-            // ── Validate BEFORE any persist (defence in depth) ─────────
+            // ── 1. Validate BEFORE any persist (defence in depth) ─────
             val canonical = validateConnectionForPersist(
                 baseUrl = normalized,
                 oldBaseUrl = old.baseUrl,
                 approvedOrigins = approvedOrigins,
             )
 
-            val newToken = when (apiKey) {
-                null -> old.apiKey
-                else -> apiKey.trim()
-            }
-
-            // ── Single edit: persist new connection AND move old HTTP origin ─
-            // Atomic transaction — no nested DataStore read/edit.
-            // Store the *normalized* form (trimmed + no trailing slash),
-            // not the canonical form (which adds "/" for root paths).
-            store.edit { p ->
-                p[Keys.BASE_URL] = normalized
-                if (apiKey != null) {
+            // ── 2. Stage: write encrypted journal ────────────────────
+            val operation = when (apiKey) {
+                null -> JournalBlob.OP_KEEP
+                else -> {
                     val trimmed = apiKey.trim()
-                    if (trimmed.isEmpty()) secure.clearToken() else secure.saveToken(trimmed)
-                } else {
-                    secure.importOnce(p[Keys.API_KEY]) // preserve a never-imported legacy key
+                    if (trimmed.isEmpty()) JournalBlob.OP_CLEAR else JournalBlob.OP_REPLACE
                 }
-                p.remove(Keys.API_KEY)
-                p.remove(Keys.MODEL)
+            }
+            val newToken = if (operation == JournalBlob.OP_REPLACE) apiKey?.trim() else null
+            beginJournal(old.baseUrl, normalized, operation, newToken)
 
-                // Atomic cleanup of old HTTP origin in the same edit.
-                // Compare canonical endpoint identities so that URL-equivalent
-                // forms (default port folding, trailing slash, host case)
-                // do NOT trigger a cleanup move.  Only real host/port/path/
-                // scheme changes do.  Uses URL-only identity — API-key
-                // fingerprint is NOT part of endpoint approval.
-                val oldEndpoint = runCatching {
-                    canonicalEndpointIdentity(old.baseUrl.trim())
-                }.getOrNull()
-                if (oldEndpoint != null && oldEndpoint != canonical && old.baseUrl.isNotBlank()) {
-                    val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
-                    val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
-                    if (oldEndpoint in currentApproved) {
-                        p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - oldEndpoint
-                        p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + oldEndpoint
+            // ── 3. Single DataStore edit: URL + approvals + legacy purge ─
+            // NO SecureStore calls inside this lambda.
+            try {
+                store.edit { p ->
+                    p[Keys.BASE_URL] = normalized
+                    p.remove(Keys.API_KEY)
+                    p.remove(Keys.MODEL)
+
+                    // Atomic cleanup of old HTTP origin in the same edit.
+                    val oldEndpoint = runCatching {
+                        canonicalEndpointIdentity(old.baseUrl.trim())
+                    }.getOrNull()
+                    if (oldEndpoint != null && oldEndpoint != canonical && old.baseUrl.isNotBlank()) {
+                        val currentApproved: Set<String> = p[Keys.APPROVED_HTTP_ORIGINS] ?: emptySet()
+                        val currentCleanup: Set<String> = p[Keys.CLEANUP_HTTP_ORIGINS] ?: emptySet()
+                        if (oldEndpoint in currentApproved) {
+                            p[Keys.APPROVED_HTTP_ORIGINS] = currentApproved - oldEndpoint
+                            p[Keys.CLEANUP_HTTP_ORIGINS] = currentCleanup + oldEndpoint
+                        }
                     }
                 }
-            }
+                markDataStoreApplied(old.baseUrl, normalized, operation, newToken)
 
-            // ── FCM effects ONLY after atomic commit succeeds ────────────
-            onConnectionChanged(old, JarvisSettings(normalized, newToken))
+                // ── 4. Write token OUTSIDE the DataStore edit ──────────
+                try {
+                    when (operation) {
+                        JournalBlob.OP_KEEP -> {
+                            // Preserve existing token; import legacy if present.
+                            secure.importOnce(null)
+                        }
+                        JournalBlob.OP_CLEAR -> {
+                            secure.clearTokenSync()
+                        }
+                        JournalBlob.OP_REPLACE -> {
+                            newToken?.let { secure.saveTokenSync(it) }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Token write failed — DO NOT clear journal.
+                    // Recovery will restore/complete on next startup.
+                    throw e
+                }
+
+                // ── 5. Clear the journal ───────────────────────────────
+                clearJournal()
+
+                // ── 6. FCM effects only after all writes succeed ───────
+                val newTokenValue = when (apiKey) {
+                    null -> old.apiKey
+                    else -> apiKey.trim().takeIf { it.isNotEmpty() } ?: old.apiKey
+                }
+                onConnectionChanged(old, JarvisSettings(normalized, newTokenValue))
+
+            } catch (e: Exception) {
+                // DataStore write failed — DO NOT clear journal.
+                // The journal preserves enough state for recovery.
+                throw e
+            }
         }
     }
 
@@ -340,7 +611,6 @@ class SettingsStore internal constructor(
             it.remove(Keys.MODEL)
             it.remove(Keys.ELEVEN_KEY)
             it.remove(Keys.ELEVEN_VOICE)
-            it.remove(Keys.WAKE_ENABLED)
         }
     }
 

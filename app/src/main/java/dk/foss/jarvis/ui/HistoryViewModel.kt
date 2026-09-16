@@ -94,15 +94,29 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         return entries.sortedByDescending { it.updatedAt }
     }
 
-    /** Resolve a server session to a local mirror or hydrate it through the API. */
-    fun openNotificationSession(sessionId: String, onReady: () -> Unit) {
+    /**
+     * Resolve a server session to a local mirror or hydrate it through the API.
+     *
+     * @param notificationOrigin  The endpoint identity embedded in the notification tap.
+     *                           If it doesn't match the current settings origin, the
+     *                           session is NOT opened and a visible stale notice is shown.
+     */
+    fun openNotificationSession(sessionId: String, notificationOrigin: String?, onReady: () -> Unit) {
         viewModelScope.launch {
             val s = settingsStore.settings.first()
             if (!s.isConfigured) {
                 notice.value = "Configure Hermes in Settings first"
                 return@launch
             }
-            val mirror = findLocalSessionMirror(repo.list(), sessionId, originIdentity(s.baseUrl, s.apiKey))
+            // Validate the notification origin against the current settings.
+            // If the origin mismatches, the notification belongs to a different
+            // endpoint/credential. Do NOT open the session or make network calls.
+            val currentOrigin = originIdentity(s.baseUrl, s.apiKey)
+            if (notificationOrigin != null && notificationOrigin != currentOrigin) {
+                notice.value = "This notification belongs to a previous Hermes connection. It has been ignored."
+                return@launch
+            }
+            val mirror = findLocalSessionMirror(repo.list(), sessionId, currentOrigin)
             if (mirror != null) open(mirror, onReady)
             else openServer(sessionId, "Hermes conversation", System.currentTimeMillis(), onReady)
         }
