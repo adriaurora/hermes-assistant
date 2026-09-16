@@ -3,6 +3,7 @@ package dk.foss.jarvis.hermes
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.PendingModelIntent
 import dk.foss.jarvis.net.E2eLog
+import dk.foss.jarvis.ui.ModelOperationCoordinator
 
 sealed class SessionTurnStartOutcome {
     data class Started(val sessionId: String, val runtime: RuntimeInfo? = null) : SessionTurnStartOutcome()
@@ -34,10 +35,13 @@ suspend fun startSessionTurn(
     var runtime: RuntimeInfo? = null
     E2eLog.log("model intent=${intentLogName(intent)}")
     if (intent != null) {
-        val result = when (intent) {
+        val operation = ModelOperationCoordinator.shared.next(conversationId, origin, sid)
+        val result = ModelOperationCoordinator.shared.run(operation, {
+            repo.activeConversationId == conversationId && repo.sessionId == sid && repo.origin == origin
+        }) { when (intent) {
             is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
             PendingModelIntent.Clear -> client.clearSessionModel(sid)
-        }
+        } } ?: return SessionTurnStartOutcome.LockFailed(sid, kotlinx.coroutines.CancellationException("stale model operation"))
         requireSameConversation()
         if (result.isFailure) {
             val error = result.exceptionOrNull()!!

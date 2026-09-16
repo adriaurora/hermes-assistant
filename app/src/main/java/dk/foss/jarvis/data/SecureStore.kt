@@ -31,6 +31,8 @@ interface AeadCipher {
 interface SecretBlobStore {
     fun get(alias: String): String?
     fun put(alias: String, blob: String)
+    /** Persist before returning. Implementations must not expose a partial value. */
+    fun putSync(alias: String, blob: String) = put(alias, blob)
     fun remove(alias: String)
 }
 
@@ -88,6 +90,9 @@ class PrefsBlobStore(context: Context) : SecretBlobStore {
     override fun put(alias: String, blob: String) {
         prefs.edit().putString(alias, blob).apply()
     }
+    override fun putSync(alias: String, blob: String) {
+        check(prefs.edit().putString(alias, blob).commit()) { "Unable to persist secure blob" }
+    }
 
     override fun remove(alias: String) {
         prefs.edit().remove(alias).apply()
@@ -136,6 +141,30 @@ class SecureStore internal constructor(
     fun savePushApiKey(value: String) = saveSecret(PUSH_API_KEY_ALIAS, value)
     fun clearPushApiKey() = blobs.remove(PUSH_API_KEY_ALIAS)
 
+    /** Atomically replaces the complete push enrollment in one encrypted blob. */
+    fun saveDeviceRegistration(registration: DeviceRegistration) {
+        val plain = listOf(
+            "1", registration.deviceId, registration.pushEndpoint,
+            registration.hermesOrigin, registration.apiKey, registration.deviceSecret ?: "",
+        ).joinToString("\u001f") { java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8)) }
+        blobs.putSync(DEVICE_REGISTRATION_ALIAS, cipher.encrypt(plain))
+    }
+
+    fun loadDeviceRegistration(): DeviceRegistration? {
+        val plain = blobs.get(DEVICE_REGISTRATION_ALIAS)?.let { cipher.decrypt(it) } ?: return null
+        val fields = plain.split('\u001f').mapNotNull { runCatching {
+            String(java.util.Base64.getUrlDecoder().decode(it), Charsets.UTF_8)
+        }.getOrNull() }
+        if (fields.size != 6 || fields[0] != "1") return null
+        return DeviceRegistration(fields[1], fields[2], fields[3], fields[4], fields[5].ifEmpty { null })
+    }
+    fun clearDeviceRegistration() = blobs.remove(DEVICE_REGISTRATION_ALIAS)
+    fun hasDeviceRegistrationMarker(): Boolean = blobs.get(DEVICE_REGISTRATION_ALIAS) != null
+    fun isDeviceRegistrationTombstone(): Boolean = blobs.get(DEVICE_REGISTRATION_ALIAS)?.let { cipher.decrypt(it) == "0" } == true
+    fun saveDeviceRegistrationTombstone() {
+        blobs.putSync(DEVICE_REGISTRATION_ALIAS, cipher.encrypt("0"))
+    }
+
     private fun loadSecret(alias: String): String? = blobs.get(alias)?.let { cipher.decrypt(it) }?.takeIf { it.isNotEmpty() }
     private fun saveSecret(alias: String, value: String) { blobs.put(alias, cipher.encrypt(value)) }
 
@@ -158,6 +187,7 @@ class SecureStore internal constructor(
         internal const val ENDPOINT_ALIAS = "hermes_push_endpoint"
         internal const val ORIGIN_ALIAS = "hermes_push_origin"
         internal const val PUSH_API_KEY_ALIAS = "hermes_push_api_key"
+        internal const val DEVICE_REGISTRATION_ALIAS = "hermes_device_registration_v1"
 
         @Volatile
         private var instance: SecureStore? = null
