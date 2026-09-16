@@ -23,47 +23,60 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     constructor(context: Context) : this(SecureStore.get(context))
 
     fun load(): DeviceRegistration? {
+        secure.loadDeviceRegistration()?.let { return it }
         val id = secure.loadDeviceId() ?: return null
         val endpoint = secure.loadPushEndpoint() ?: return null
         val origin = secure.loadPushOrigin() ?: return null
         val apiKey = secure.loadPushApiKey() ?: return null
-        return DeviceRegistration(id, endpoint, origin, apiKey, secure.loadDeviceSecret())
+        return DeviceRegistration(id, endpoint, origin, apiKey, secure.loadDeviceSecret()).also {
+            secure.saveDeviceRegistration(it)
+        }
     }
 
     fun loadOrMigrate(settings: JarvisSettings): RegistryState {
+        secure.loadDeviceRegistration()?.let { return RegistryState.Registered(it) }
         val id = secure.loadDeviceId() ?: return RegistryState.Empty
         val endpoint = secure.loadPushEndpoint() ?: return RegistryState.Empty
         val origin = secure.loadPushOrigin()
         val apiKey = secure.loadPushApiKey()
-        if (origin != null && apiKey != null) return RegistryState.Registered(DeviceRegistration(id, endpoint, origin, apiKey, secure.loadDeviceSecret()))
+        if (origin != null && apiKey != null) return RegistryState.Registered(DeviceRegistration(id, endpoint, origin, apiKey, secure.loadDeviceSecret()).also {
+            secure.saveDeviceRegistration(it)
+        })
         if (settings.isConfigured) {
             val boundOrigin = origin ?: settings.baseUrl.trim().trimEnd('/')
             if (origin == null) secure.savePushOrigin(boundOrigin)
             if (apiKey == null) secure.savePushApiKey(settings.apiKey)
-            return RegistryState.Registered(DeviceRegistration(id, endpoint, boundOrigin, apiKey ?: settings.apiKey, secure.loadDeviceSecret()))
+            return RegistryState.Registered(DeviceRegistration(id, endpoint, boundOrigin, apiKey ?: settings.apiKey, secure.loadDeviceSecret()).also {
+                secure.saveDeviceRegistration(it)
+            })
         }
         return RegistryState.Empty
     }
 
     fun saveV1(deviceId: String, deviceSecret: String, pushEndpoint: String, hermesOrigin: String, apiKey: String) {
-        secure.savePushEndpoint(pushEndpoint)
-        secure.savePushOrigin(hermesOrigin)
-        secure.savePushApiKey(apiKey)
-        secure.saveDeviceSecret(deviceSecret)
-        secure.saveDeviceId(deviceId)
-
+        secure.saveDeviceRegistration(DeviceRegistration(deviceId, pushEndpoint, hermesOrigin, apiKey, deviceSecret))
+        // Compatibility shadow; the v1 blob is authoritative.
+        secure.savePushEndpoint(pushEndpoint); secure.savePushOrigin(hermesOrigin)
+        secure.savePushApiKey(apiKey); secure.saveDeviceSecret(deviceSecret); secure.saveDeviceId(deviceId)
     }
 
     fun save(deviceId: String, pushEndpoint: String, hermesOrigin: String = "", apiKey: String = "") {
         secure.saveDeviceId(deviceId); secure.savePushEndpoint(pushEndpoint)
         if (hermesOrigin.isNotEmpty()) secure.savePushOrigin(hermesOrigin)
         if (apiKey.isNotEmpty()) secure.savePushApiKey(apiKey)
+        if (hermesOrigin.isNotEmpty() && apiKey.isNotEmpty()) {
+            secure.saveDeviceRegistration(DeviceRegistration(deviceId, pushEndpoint, hermesOrigin, apiKey, secure.loadDeviceSecret()))
+        }
     }
     fun updateCredentials(apiKey: String) {
-        if (apiKey.isNotEmpty()) secure.savePushApiKey(apiKey)
+        if (apiKey.isNotEmpty()) {
+            secure.loadDeviceRegistration()?.let { secure.saveDeviceRegistration(it.copy(apiKey = apiKey)) }
+            secure.savePushApiKey(apiKey)
+        }
     }
 
     fun clear() {
+        secure.clearDeviceRegistration()
         secure.clearDeviceId()
         secure.clearPushEndpoint()
         secure.clearPushOrigin()
