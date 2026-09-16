@@ -35,13 +35,11 @@ class DeviceRegistryV1Test {
     private fun newStore(blobs: MemBlobs = MemBlobs()) =
         DeviceRegistryStore(SecureStore(FakeCipher(), blobs)) to blobs
 
-    @Test fun `saveV1 registra orden secret ANTES que id`() {
+    @Test fun `saveV1 registra el enrollment en un unico blob confirmado`() {
         val (store, blobs) = newStore()
         store.saveV1("dev-1", "secret-1", "push-endpoint", "hermes-origin", "api-key-1")
         val order = blobs.putOrder
-        val secretIdx = order.indexOf("hermes_device_secret")
-        val idIdx = order.indexOf("hermes_device_id")
-        assertTrue("hermes_device_secret debe escribirse ANTES que hermes_device_id", secretIdx < idIdx)
+        assertEquals(listOf(SecureStore.DEVICE_REGISTRATION_ALIAS), order)
     }
 
     @Test fun `saveV1 carga completo con deviceSecret`() {
@@ -87,7 +85,7 @@ class DeviceRegistryV1Test {
         store.saveV1("dev-1", "secret-1", "push-endpoint", "hermes-origin", "api-key-1")
         store.clear()
         assertNull(store.load())
-        assertTrue(blobs.map.isEmpty())
+        assertTrue(blobs.map.containsKey(SecureStore.DEVICE_REGISTRATION_ALIAS))
     }
 
     @Test fun `toString REDACTED sin secretos`() {
