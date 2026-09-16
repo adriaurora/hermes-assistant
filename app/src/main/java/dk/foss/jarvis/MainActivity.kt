@@ -34,7 +34,7 @@ private enum class Screen { Chat, Settings, Conversation, History }
 
 class MainActivity : ComponentActivity() {
     private var awaitingPushPermission = false
-    private var tapResult by mutableStateOf<TapResult?>(null)
+    private var tapRequest by mutableStateOf<TapRequest?>(null)
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,15 +42,15 @@ class MainActivity : ComponentActivity() {
         // MainActivity is deliberately an ordinary app entry point. In
         // particular, neither ACTION_ASSIST nor notification extras are trust
         // signals here.
-        lifecycleScope.launch { tapResult = consumeTap(intent) }
-        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, tapResult = tapResult) }
+        lifecycleScope.launch { tapRequest = consumeTap(intent) }
+        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, tapRequest = tapRequest) }
         lifecycleScope.launch { runCatching { PushIngress.scheduleStartupWork(applicationContext) } }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        lifecycleScope.launch { consumeTap(intent)?.let { tapResult = it } }
+        lifecycleScope.launch { consumeTap(intent)?.let { tapRequest = it } }
     }
 
     /**
@@ -58,12 +58,12 @@ class MainActivity : ComponentActivity() {
      * token value is returned so the caller can decide what to do).  Uses
      * [originIdentity] from the current settings to validate the origin.
      */
-    private suspend fun consumeTap(intent: android.content.Intent?): TapResult? {
+    private suspend fun consumeTap(intent: android.content.Intent?): TapRequest? {
         if (intent?.action != HERMES_NOTIFICATION_TAP || intent.`package` != packageName) return null
         val token = intent.getStringExtra("tap_token") ?: return null
             val origin = runCatching { dk.foss.jarvis.data.SettingsStore(this).settings.first() }
                 .getOrNull()?.let { s -> if (s.isConfigured) originIdentity(s.baseUrl, s.apiKey) else "" } ?: ""
-        return NotificationTapStore.consume(this, token, origin)
+        return TapRequest(token, NotificationTapStore.consume(this, token, origin))
     }
 
     private fun requestPushEnable() {
@@ -100,7 +100,7 @@ class MainActivity : ComponentActivity() {
  * - NotFound → silently ignore (already consumed).
  */
 @Composable
-internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}, tapResult: TapResult? = null) {
+internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}, tapRequest: TapRequest? = null) {
     val hvm: HistoryViewModel = viewModel()
     val chatVm: ChatViewModel = viewModel()
     var screen by remember { mutableStateOf(if (startInConversation) Screen.Conversation else Screen.Chat) }
@@ -108,22 +108,23 @@ internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean
     // Process notification tap on launch.  No runBlocking; we rely on
     // HistoryViewModel's suspendible openNotificationSession to validate
     // the origin asynchronously.
-    LaunchedEffect(tapResult) {
-        tapResult?.let { result ->
-            when (result) {
-                is TapResult.StaleOrigin -> {
+    LaunchedEffect(tapRequest?.token) {
+        tapRequest?.let { request ->
+            when (val route = routeTap(request)) {
+                TapRoute.Stale -> {
                     // Stale tap: show a visible notice so the user understands
                     // why the notification was ignored.
                     hvm.notice.value = "This notification belongs to a previous Hermes connection. It has been ignored."
                     screen = Screen.History
-                }
-                is TapResult.Valid -> {
+}
+
+                is TapRoute.Import -> {
                     // Valid tap: open the session.  HistoryViewModel validates
                     // the origin again and shows a notice if it has changed.
                     screen = Screen.History
-                    hvm.openNotificationSession(result.sessionId, result.notificationOrigin) { screen = Screen.Chat }
+                    hvm.openNotificationSession(route.sessionId, route.origin) { screen = Screen.Chat }
                 }
-                TapResult.NotFound -> {
+                TapRoute.Ignore -> {
                     // Token already consumed — nothing to do.
                 }
             }
@@ -169,3 +170,16 @@ internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean
                 }
         }
     }
+internal data class TapRequest(val token: String, val result: TapResult)
+
+internal sealed interface TapRoute {
+    data class Import(val sessionId: String, val origin: String) : TapRoute
+    data object Stale : TapRoute
+    data object Ignore : TapRoute
+}
+
+internal fun routeTap(request: TapRequest, onImport: () -> Unit = {}): TapRoute = when (val result = request.result) {
+    is TapResult.Valid -> { onImport(); TapRoute.Import(result.sessionId, result.notificationOrigin) }
+    TapResult.StaleOrigin -> TapRoute.Stale
+    TapResult.NotFound -> TapRoute.Ignore
+}

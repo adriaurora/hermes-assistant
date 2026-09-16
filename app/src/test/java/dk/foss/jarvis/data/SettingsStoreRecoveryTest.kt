@@ -153,7 +153,6 @@ class SettingsStoreRecoveryTest {
         // Simulate: journal was written, but DataStore was NOT updated
         // (crash before DataStore.edit). The journal has old URL, new URL,
         // and REPLACE operation with newToken.
-        blobs.map.clear() // clear any residual
         val journal = JournalBlob(
             version = 1,
             oldUrl = "http://a.local:8642",
@@ -168,9 +167,9 @@ class SettingsStoreRecoveryTest {
         // (KEEP case is implicit — old token is still there).
         val result = store.ensureRecovered()
 
-        // Settings unchanged; no target token was written by the staged crash.
+        // Settings unchanged; the staged journal never removes the old token.
         assertEquals("http://a.local:8642", store.settings.first().baseUrl)
-        assertEquals("", store.settings.first().apiKey)
+        assertEquals("tok1", store.settings.first().apiKey)
     }
 
     // ─── 5. Manual journal write → URL changed → new token saved ───────────
@@ -276,6 +275,32 @@ class SettingsStoreRecoveryTest {
         val settings2 = store.settings.first()
         assertEquals("http://b.local:8642", settings2.baseUrl)
         assertEquals("tok1", settings2.apiKey) // token preserved
+    }
+
+    @Test fun `staged same url does not apply replacement token`() = runBlocking {
+        val cipher = FakeCipher(); val blobs = MemBlobs(); val store = makeStore(blobs, cipher = cipher)
+        store.updateConnection("http://same.local", "old")
+        blobs.map[SecureStore.CONN_CHANGE_JOURNAL_ALIAS] = cipher.encrypt(JournalBlob.toJson(JournalBlob(1, "http://same.local", "http://same.local", JournalBlob.OP_REPLACE, "new", "STAGED")))
+        store.ensureRecovered()
+        assertEquals("old", store.settings.first().apiKey)
+        assertFalse(blobs.map.containsKey(SecureStore.CONN_CHANGE_JOURNAL_ALIAS))
+    }
+
+    @Test fun `datastore applied same url applies replacement token`() = runBlocking {
+        val cipher = FakeCipher(); val blobs = MemBlobs(); val store = makeStore(blobs, cipher = cipher)
+        store.updateConnection("http://same.local", "old")
+        blobs.map[SecureStore.CONN_CHANGE_JOURNAL_ALIAS] = cipher.encrypt(JournalBlob.toJson(JournalBlob(1, "http://same.local", "http://same.local", JournalBlob.OP_REPLACE, "new", "DATASTORE_APPLIED")))
+        store.ensureRecovered()
+        assertEquals("new", store.settings.first().apiKey)
+        assertFalse(blobs.map.containsKey(SecureStore.CONN_CHANGE_JOURNAL_ALIAS))
+    }
+
+    @Test fun `journal clear failure prevents hook and preserves journal`() = runBlocking {
+        val blobs = MemBlobs(removeFails = true); var hooked = false
+        val store = makeStore(blobs, hook = { _, _ -> hooked = true })
+        try { store.updateConnection("http://clear.local", "token"); fail("expected clear failure") } catch (_: Exception) { }
+        assertFalse(hooked)
+        assertTrue(blobs.map.containsKey(SecureStore.CONN_CHANGE_JOURNAL_ALIAS))
     }
 
     // ─── 9. CLEAR operation → token removed ────────────────────────────────

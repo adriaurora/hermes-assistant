@@ -71,10 +71,7 @@ object NotificationTapStore {
      *         doesn't exist.
      */
     fun consume(context: Context, token: String, currentOrigin: String): TapResult {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val value = prefs.getString(token, null) ?: return TapResult.NotFound
-        prefs.edit().remove(token).apply()
-        return validateTap(value, currentOrigin)
+        return consume(PreferenceTapStorage(context), token, currentOrigin)
     }
 
     /**
@@ -89,14 +86,32 @@ object NotificationTapStore {
      * @return The same [TapResult] as [consume], but the token is not removed.
      */
     fun peek(context: Context, token: String, currentOrigin: String): TapResult {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val value = prefs.getString(token, null) ?: return TapResult.NotFound
+        return peek(PreferenceTapStorage(context), token, currentOrigin)
+    }
+
+    internal fun consume(storage: NotificationTapStorage, token: String, currentOrigin: String): TapResult {
+        val value = storage.get(token) ?: return TapResult.NotFound
+        storage.remove(token)
         return validateTap(value, currentOrigin)
     }
+
+    internal fun peek(storage: NotificationTapStorage, token: String, currentOrigin: String): TapResult =
+        storage.get(token)?.let { validateTap(it, currentOrigin) } ?: TapResult.NotFound
 
     private fun validateTap(value: String, currentOrigin: String): TapResult {
         return parseNotificationTap(value, currentOrigin)
     }
+}
+
+internal interface NotificationTapStorage {
+    fun get(token: String): String?
+    fun remove(token: String)
+}
+
+private class PreferenceTapStorage(context: Context) : NotificationTapStorage {
+    private val prefs = context.getSharedPreferences("notification_taps", Context.MODE_PRIVATE)
+    override fun get(token: String) = prefs.getString(token, null)
+    override fun remove(token: String) { prefs.edit().remove(token).apply() }
 }
 
 /** Pure validation entry point used by JVM tests and the store itself. */
