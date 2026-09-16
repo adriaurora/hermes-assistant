@@ -23,7 +23,7 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     constructor(context: Context) : this(SecureStore.get(context))
 
     fun load(): DeviceRegistration? {
-        secure.loadDeviceRegistration()?.let { return it }
+        if (secure.hasDeviceRegistrationMarker()) return secure.loadDeviceRegistration()
         val id = secure.loadDeviceId() ?: return null
         val endpoint = secure.loadPushEndpoint() ?: return null
         val origin = secure.loadPushOrigin() ?: return null
@@ -34,7 +34,7 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     }
 
     fun loadOrMigrate(settings: JarvisSettings): RegistryState {
-        secure.loadDeviceRegistration()?.let { return RegistryState.Registered(it) }
+        if (secure.hasDeviceRegistrationMarker()) return secure.loadDeviceRegistration()?.let { RegistryState.Registered(it) } ?: RegistryState.Empty
         val id = secure.loadDeviceId() ?: return RegistryState.Empty
         val endpoint = secure.loadPushEndpoint() ?: return RegistryState.Empty
         val origin = secure.loadPushOrigin()
@@ -55,9 +55,6 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
 
     fun saveV1(deviceId: String, deviceSecret: String, pushEndpoint: String, hermesOrigin: String, apiKey: String) {
         secure.saveDeviceRegistration(DeviceRegistration(deviceId, pushEndpoint, hermesOrigin, apiKey, deviceSecret))
-        // Compatibility shadow; the v1 blob is authoritative.
-        secure.savePushEndpoint(pushEndpoint); secure.savePushOrigin(hermesOrigin)
-        secure.savePushApiKey(apiKey); secure.saveDeviceSecret(deviceSecret); secure.saveDeviceId(deviceId)
     }
 
     fun save(deviceId: String, pushEndpoint: String, hermesOrigin: String = "", apiKey: String = "") {
@@ -76,7 +73,7 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     }
 
     fun clear() {
-        secure.clearDeviceRegistration()
+        secure.saveDeviceRegistrationTombstone()
         secure.clearDeviceId()
         secure.clearPushEndpoint()
         secure.clearPushOrigin()

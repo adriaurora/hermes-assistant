@@ -159,6 +159,10 @@ class SecureStore internal constructor(
         return DeviceRegistration(fields[1], fields[2], fields[3], fields[4], fields[5].ifEmpty { null })
     }
     fun clearDeviceRegistration() = blobs.remove(DEVICE_REGISTRATION_ALIAS)
+    fun hasDeviceRegistrationMarker(): Boolean = blobs.get(DEVICE_REGISTRATION_ALIAS) != null
+    fun saveDeviceRegistrationTombstone() {
+        blobs.putSync(DEVICE_REGISTRATION_ALIAS, cipher.encrypt("0"))
+    }
 
     private fun loadSecret(alias: String): String? = blobs.get(alias)?.let { cipher.decrypt(it) }?.takeIf { it.isNotEmpty() }
     private fun saveSecret(alias: String, value: String) { blobs.put(alias, cipher.encrypt(value)) }

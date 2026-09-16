@@ -57,8 +57,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var turnInFlight = false
     private var streamGeneration = 0
     /** Model changes share one ordering domain for text and voice. */
-    private var modelOperationGeneration = 0L
-    private val modelOperationMutex = Mutex()
+    private val modelCoordinator = ModelOperationCoordinator()
     private var transitionInFlight = false
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -82,12 +81,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Fetch the Hermes catalog and, when a session exists, the current pinned model. */
     fun refreshModel() {
-        val operation = ++modelOperationGeneration
         val conversationId = repo.activeConversationId
         val sessionId = repo.sessionId
+        val operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
-            modelOperationMutex.withLock {
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
+            if (!!modelOperationCurrent(operation)) return@launch
             if (conversationId != lastSyncedConversationId) {
                 modelSelection.reset()
                 effectiveRoute.value = null
@@ -95,12 +94,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 lastSyncedConversationId = conversationId
             }
             val s = settingsStore.settings.first()
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            if (!!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
             modelLoading.value = true
             val client = HermesClient(s.baseUrl, s.apiKey)
             val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            if (!!modelOperationCurrent(operation)) return@launch
             E2eLog.log("refreshModel gate=${gate::class.simpleName}")
             when (gate) {
                 is ConversationRepository.RebindOutcome.BlockedAuth,
@@ -114,7 +113,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             val origin = originIdentity(s.baseUrl, s.apiKey)
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            if (!!modelOperationCurrent(operation)) return@launch
 
             if (caps.features.model_options && caps.features.session_model_lock) {
                 modelSelection.onSelectorAvailability(
@@ -133,7 +132,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             client.getModelOptions().fold(
                 onSuccess = {
-                    if (!modelOperationCurrent(operation, conversationId, sessionId)) return@fold
+                    if (!modelOperationCurrent(operation)) return@fold
                     modelOptions.value = flattenModels(it)
                     modelDefault.value = it.model
                     modelLoading.value = false
@@ -150,17 +149,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Choose [option], or pass null for Automatic (clear the session override). */
     fun chooseModel(option: ModelOption?) {
-        val operation = ++modelOperationGeneration
         val conversationId = repo.activeConversationId
         val sessionId = repo.sessionId
+        val operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
-            modelOperationMutex.withLock {
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
+            if (!!modelOperationCurrent(operation)) return@launch
             modelError.value = null
             val sid = sessionId
             E2eLog.log("chooseModel activeId=${conversationId} sid=$sid option=${option?.modelId}")
             val s = settingsStore.settings.first()
-            if (!modelOperationCurrent(operation, conversationId, sessionId)) return@withLock
+            if (!!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelError.value = "Configure Hermes in Settings first"; return@launch }
 
             // Gates must not leave a stale intent behind. A real choice is queued
@@ -169,14 +168,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val intent = option?.let { PendingModelIntent.Set(it.modelId, it.label) } ?: PendingModelIntent.Clear
             val previousIntent = repo.pendingModelIntent
             repo.recordPendingModelIntent(intent)
-            if (!modelOperationCurrent(operation, conversationId, sessionId) || repo.pendingModelIntent != intent) return@withLock
+            if (!modelOperationCurrent(operation) || repo.pendingModelIntent != intent) return@launch
             modelLabel.value = chosenLabel
             modelPickerOpen.value = false
 
             val client = HermesClient(s.baseUrl, s.apiKey)
             if (!sid.isNullOrEmpty()) {
                 val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
-                if (!modelOperationCurrent(operation, conversationId, sessionId) || repo.pendingModelIntent != intent) return@withLock
+                if (!modelOperationCurrent(operation) || repo.pendingModelIntent != intent) return@launch
                 E2eLog.log("chooseModel gate=${gate::class.simpleName}")
                 when (gate) {
                     is ConversationRepository.RebindOutcome.BlockedAuth -> { modelLabel.value = modelSelection.state.label; modelError.value = "Authentication failed while verifying this session."; return@launch }
@@ -199,11 +198,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             val result = if (option == null) client.clearSessionModel(sid)
             else client.setSessionModel(sid, option.modelId)
-            if (!modelOperationCurrent(operation, conversationId, sessionId) || repo.pendingModelIntent != intent) return@withLock
+            if (!modelOperationCurrent(operation) || repo.pendingModelIntent != intent) return@launch
 
             result.fold(
                 onSuccess = {
-                    if (!modelOperationCurrent(operation, conversationId, sessionId) || repo.pendingModelIntent != intent) return@fold
+                    if (!modelOperationCurrent(operation) || repo.pendingModelIntent != intent) return@fold
                     if (option == null) {
                         // Clear
                         modelSelection.onClearAck(it.runtime)
@@ -233,12 +232,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun onSessionCaptured(sessionId: String) {
         val conversationId = repo.activeConversationId
         val pending = repo.pendingModelIntent ?: return
-        val operation = ++modelOperationGeneration
+        val operation = modelCoordinator.next(conversationId, null, repo.sessionId)
         if (pending is PendingModelIntent.Set) modelLabel.value = pending.label
         viewModelScope.launch {
-            modelOperationMutex.withLock {
+            modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
             if (repo.activeConversationId != conversationId || repo.pendingModelIntent != pending ||
-                operation != modelOperationGeneration) return@withLock
+                !modelOperationCurrent(operation)) return@launch
             val s = settingsStore.settings.first()
             if (!s.isConfigured) return@launch
             val client = HermesClient(s.baseUrl, s.apiKey)
@@ -249,7 +248,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             result.fold(
                 onSuccess = {
                     if (repo.activeConversationId != conversationId || repo.pendingModelIntent != pending ||
-                        operation != modelOperationGeneration || repo.sessionId != sessionId) return@fold
+                        !modelOperationCurrent(operation) || repo.sessionId != sessionId) return@fold
                     when (pending) {
                         is PendingModelIntent.Set -> {
                             modelLabel.value = pending.label
@@ -265,7 +264,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = {
                     modelError.value = "Couldn't pin the model to this session. Try again."
-                     syncLabelWithServer(client, s.baseUrl, s.apiKey)
+                     syncLabelWithServer(client, s.baseUrl, s.apiKey, operation, conversationId, sessionId)
                 },
             )
             }
@@ -273,13 +272,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Ask the server what model this session is actually pinned to (null = default). */
-    private suspend fun syncLabelWithServer(client: HermesClient, baseUrl: String, apiKey: String) {
-        syncLabelWithServer(client, baseUrl, apiKey, modelOperationGeneration, repo.activeConversationId, repo.sessionId)
-    }
-
     private suspend fun syncLabelWithServer(client: HermesClient, baseUrl: String, apiKey: String,
-                                             operation: Long, conversationId: String, sessionId: String?) {
-        if (!modelOperationCurrent(operation, conversationId, sessionId)) return
+                                             operation: ModelOperationCoordinator.Context, conversationId: String, sessionId: String?) {
+        if (!modelOperationCurrent(operation)) return
         val sid = sessionId
         E2eLog.log("syncLabel sid=${sid ?: "null"}")
         if (sid.isNullOrEmpty()) {
@@ -289,7 +284,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val gate = repo.verifySessionForCurrentOrigin(client, baseUrl, apiKey)
-        if (!modelOperationCurrent(operation, conversationId, sessionId)) return
+        if (!modelOperationCurrent(operation)) return
         E2eLog.log("syncLabel gate=${gate::class.simpleName}")
         when (gate) {
             is ConversationRepository.RebindOutcome.BlockedAuth,
@@ -299,7 +294,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         client.getSession(sid).fold(
             onSuccess = { env ->
-                if (!modelOperationCurrent(operation, conversationId, sessionId)) return@fold
+                if (!modelOperationCurrent(operation)) return@fold
                 modelSelection.onSessionInsight(env.session.model, modelDefault.value)
                 modelLabel.value = modelSelection.state.label
             },
@@ -307,8 +302,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun modelOperationCurrent(operation: Long, conversationId: String, sessionId: String?): Boolean =
-        operation == modelOperationGeneration && repo.activeConversationId == conversationId && repo.sessionId == sessionId
+    private fun modelOperationCurrent(operation: ModelOperationCoordinator.Context): Boolean =
+        operation.conversationId == repo.activeConversationId && operation.sessionId == repo.sessionId &&
+            modelCoordinator.isCurrent(operation) { true }
 
     private fun flattenModels(payload: ModelOptionsPayload): List<ModelOption> {
         val out = mutableListOf<ModelOption>()

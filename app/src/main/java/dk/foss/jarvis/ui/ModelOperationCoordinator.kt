@@ -2,16 +2,23 @@ package dk.foss.jarvis.ui
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 /** Deterministic ordering/obsolescence primitive used by model operations. */
 internal class ModelOperationCoordinator {
     data class Context(val conversationId: String, val origin: String?, val sessionId: String?, val generation: Long)
-    private val mutex = Mutex()
-    private var generation = 0L
+    private val mutexes = ConcurrentHashMap<String, Mutex>()
+    private val generations = ConcurrentHashMap<String, Long>()
 
     fun next(conversationId: String, origin: String?, sessionId: String?) =
-        Context(conversationId, origin, sessionId, ++generation)
+        Context(conversationId, origin, sessionId, generations.merge(conversationId, 1L, Long::plus)!!)
 
-    suspend fun <T> run(context: Context, current: () -> Boolean, block: suspend () -> T): T? =
-        mutex.withLock { if (context.generation != generation || !current()) null else block().takeIf { current() && context.generation == generation } }
+    fun isCurrent(context: Context, current: () -> Boolean): Boolean =
+        generations[context.conversationId] == context.generation && current()
+
+    suspend inline fun <T> run(context: Context, noinline current: () -> Boolean, block: suspend () -> T): T? =
+        mutexes.getOrPut(context.conversationId) { Mutex() }.withLock {
+            if (!isCurrent(context, current)) null
+            else block().takeIf { isCurrent(context, current) }
+        }
 }
