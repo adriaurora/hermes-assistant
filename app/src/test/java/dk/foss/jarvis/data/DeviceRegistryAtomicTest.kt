@@ -30,11 +30,11 @@ class DeviceRegistryAtomicTest {
         assertNotEquals(before, store.load())
     }
 
-    @Test fun `corrupt or incomplete atomic blob falls back to complete legacy record`() {
+    @Test fun `corrupt atomic blob fails closed instead of reviving legacy`() {
         val blobs = Blobs(); val secure = SecureStore(Cipher(), blobs)
         secure.saveDeviceId("old"); secure.savePushEndpoint("token"); secure.savePushOrigin("origin"); secure.savePushApiKey("key")
         blobs.values[SecureStore.DEVICE_REGISTRATION_ALIAS] = "broken"
-        assertEquals(DeviceRegistration("old", "token", "origin", "key", null), DeviceRegistryStore(secure).load())
+        assertNull(DeviceRegistryStore(secure).load())
     }
 
     @Test fun `clear revokes authoritative and compatibility records`() {
