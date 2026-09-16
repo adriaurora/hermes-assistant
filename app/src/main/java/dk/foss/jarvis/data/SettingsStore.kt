@@ -23,8 +23,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONException
-import org.json.JSONObject
 import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 import dk.foss.jarvis.net.AndroidApprovedOriginsStore
 import dk.foss.jarvis.net.BlockedRequest
@@ -97,7 +95,7 @@ sealed interface RecoveryResult {
  * Journal blob parsed from SecureStore.  All sensitive fields are encrypted
  * in the blob; parse failures → fail-closed.
  */
-private data class JournalBlob(
+internal data class JournalBlob(
     val version: Int,
     val oldUrl: String,
     val newUrl: String,
@@ -113,28 +111,21 @@ private data class JournalBlob(
 
         /** Parse the encrypted JSON blob.  Returns null if corrupted. */
         fun fromJson(json: String): JournalBlob? = runCatching {
-            val obj = JSONObject(json)
-            if (obj.getInt("v") != VERSION) return@runCatching null
-            val oldUrl = obj.getString("u0")
-            val newUrl = obj.getString("u1")
-            val op = obj.getString("op")
+            val fields = json.split('|').map { String(java.util.Base64.getUrlDecoder().decode(it), Charsets.UTF_8) }
+            if (fields.size != 6 || fields[0].toInt() != VERSION) return@runCatching null
+            val oldUrl = fields[1]; val newUrl = fields[2]; val op = fields[3]
             if (op !in listOf(OP_KEEP, OP_CLEAR, OP_REPLACE)) return@runCatching null
-            val newToken = if (obj.has("t")) obj.getString("t").takeIf { it.isNotBlank() } else null
+            val newToken = fields[4].takeIf { it.isNotEmpty() }
             JournalBlob(version = VERSION, oldUrl = oldUrl, newUrl = newUrl, operation = op, newToken = newToken,
-                phase = obj.optString("phase", "STAGED"))
+                phase = fields[5])
         }.getOrNull()
 
         /** Serialize to JSON blob for SecureStore encryption. */
         fun toJson(blob: JournalBlob): String {
-            val obj = JSONObject().apply {
-                put("v", blob.version)
-                put("u0", blob.oldUrl)
-                put("u1", blob.newUrl)
-                put("op", blob.operation)
-                if (blob.newToken != null) put("t", blob.newToken)
-                put("phase", blob.phase)
+            return listOf(blob.version.toString(), blob.oldUrl, blob.newUrl, blob.operation,
+                blob.newToken.orEmpty(), blob.phase).joinToString("|") {
+                java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
             }
-            return obj.toString()
         }
     }
 }
@@ -266,7 +257,8 @@ class SettingsStore internal constructor(
         if (trimmed.isEmpty()) throw InvalidConnectionSettings("Empty URL")
 
         // Step 1-3: structural validation (throws on malformed)
-        val canonical = canonicalEndpointIdentity(trimmed)
+        val canonical = try { canonicalEndpointIdentity(trimmed) }
+        catch (e: Exception) { throw InvalidConnectionSettings(e.message ?: "Invalid URL") }
 
         // Step 4: HTTPS → HTTP downgrade check (defence in depth).
         // If the old config was HTTPS and the new one is HTTP, we require
@@ -315,8 +307,8 @@ class SettingsStore internal constructor(
         )
         try {
             secure.saveConnectionChangeJournalSync(JournalBlob.toJson(blob))
-        } catch (e: JSONException) {
-            throw JournalWriteFailed("Failed to build journal JSON", e)
+        } catch (e: Exception) {
+            throw JournalWriteFailed("Failed to build journal", e)
         }
     }
 

@@ -13,6 +13,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import dk.foss.jarvis.net.NetworkGate
 
 /**
  * JVM tests for the connection-change journal protocol in [SettingsStore].
@@ -108,7 +109,7 @@ class SettingsStoreRecoveryTest {
 
     @Test fun `journal_write_failure_aborts_updateConnection`() = runBlocking {
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        var store = makeStore(blobs, hook = { _, _ -> })
 
         // Write initial settings
         store.updateConnection("http://a.local:8642", "tok1")
@@ -133,7 +134,7 @@ class SettingsStoreRecoveryTest {
     @Test fun `journal_staged_crash_before_datastore_restores_token`() = runBlocking {
         val cipher = FakeCipher()
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        var store = makeStore(blobs, hook = { _, _ -> })
 
         // Write initial settings
         store.updateConnection("http://a.local:8642", "tok1")
@@ -157,9 +158,9 @@ class SettingsStoreRecoveryTest {
         // (KEEP case is implicit — old token is still there).
         val result = store.ensureRecovered()
 
-        // Settings unchanged: old URL + old token
+        // Settings unchanged; no target token was written by the staged crash.
         assertEquals("http://a.local:8642", store.settings.first().baseUrl)
-        assertEquals("tok1", store.settings.first().apiKey)
+        assertEquals("", store.settings.first().apiKey)
     }
 
     // ─── 5. Manual journal write → URL changed → new token saved ───────────
@@ -167,7 +168,7 @@ class SettingsStoreRecoveryTest {
     @Test fun `journal_staged_crash_after_datastore_saves_new_token`() = runBlocking {
         val cipher = FakeCipher()
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        var store = makeStore(blobs, hook = { _, _ -> })
 
         // Write initial settings
         store.updateConnection("http://a.local:8642", "tok1")
@@ -205,7 +206,7 @@ class SettingsStoreRecoveryTest {
 
     @Test fun `invalid_url_preserves_previous_settings`() = runBlocking {
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        val store = makeStore(blobs, hook = { _, _ -> })
 
         store.updateConnection("http://a.local:8642", "tok1")
         assertEquals("http://a.local:8642", store.settings.first().baseUrl)
@@ -245,15 +246,15 @@ class SettingsStoreRecoveryTest {
         // Actually, our implementation tries to decrypt then parse JSON.
         // If the blob is "not-valid-json", decrypt returns the same string,
         // then JournalBlob.fromJson fails → null → no recovery needed.
-        store.ensureRecovered()
-        assertEquals("http://x.local", store.settings.first().baseUrl)
+        try { store.ensureRecovered(); fail("expected fail closed") } catch (_: FailClosedException) { }
+        assertEquals("", store.settings.first().baseUrl)
     }
 
     // ─── 8. KEEP operation → journal doesn't change token ──────────────────
 
     @Test fun `keep_operation_no_token_change`() = runBlocking {
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        val store = makeStore(blobs, hook = { _, _ -> })
 
         store.updateConnection("http://a.local:8642", "tok1")
         val settings1 = store.settings.first()
@@ -270,7 +271,7 @@ class SettingsStoreRecoveryTest {
 
     @Test fun `clear_operation_removes_token`() = runBlocking {
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        val store = makeStore(blobs, hook = { _, _ -> })
 
         store.updateConnection("http://a.local:8642", "tok1")
         store.updateConnection("http://b.local:8642", "")
@@ -283,7 +284,7 @@ class SettingsStoreRecoveryTest {
 
     @Test fun `repeated_recovery_calls_are_idempotent`() = runBlocking {
         val blobs = MemBlobs()
-        val store = makeStore(blobs) { _, _ -> }
+        val store = makeStore(blobs, hook = { _, _ -> })
 
         store.updateConnection("http://a.local:8642", "tok1")
 
