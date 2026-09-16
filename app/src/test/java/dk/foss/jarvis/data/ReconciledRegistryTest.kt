@@ -69,7 +69,7 @@ class ReconciledRegistryTest {
         assertEquals(RegistryState.Empty, store.loadOrMigrate(JarvisSettings("http://hermes", "api-key")))
     }
 
-    @Test fun partialRecordWithoutOriginApikeyReturnsLegacyPendingWithSameDeviceId() {
+    @Test fun partialRecordWithoutOriginApikeyReturnsEmptyWhenUnconfigured() {
         val blobs = MemBlobs()
         // Write only deviceId and pushEndpoint (no origin, no apiKey).
         // DeviceRegistryStore.save() also writes origin/apiKey, so we bypass it
@@ -79,12 +79,9 @@ class ReconciledRegistryTest {
         secure.savePushEndpoint("push-endpoint")
         val store = DeviceRegistryStore(secure)
 
-        // Settings not configured -> LegacyPending
+        // Settings not configured -> Empty (no LegacyPending)
         val result = store.loadOrMigrate(JarvisSettings("", ""))
-        assertTrue("loadOrMigrate must return LegacyPending", result is RegistryState.LegacyPending)
-        val lp = result as RegistryState.LegacyPending
-        assertEquals("dev-partial", lp.deviceId)
-        assertEquals("push-endpoint", lp.pushEndpoint)
+        assertTrue("loadOrMigrate must return Empty", result is RegistryState.Empty)
     }
 
     /** F1: legacy re-registration clears a stale v1 secret (orphan hygiene). */

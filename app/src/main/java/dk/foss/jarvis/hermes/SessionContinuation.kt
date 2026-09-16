@@ -20,18 +20,25 @@ suspend fun startSessionTurn(
     uniqueSuffix: String,
     intent: PendingModelIntent?,
 ): SessionTurnStartOutcome {
-    val wasExisting = !repo.sessionId.isNullOrEmpty()
+    val conversationId = repo.activeConversationId
+    fun requireSameConversation() {
+        if (repo.activeConversationId != conversationId) throw kotlinx.coroutines.CancellationException("Conversation changed")
+    }
     val sid = repo.sessionId?.takeIf { it.isNotEmpty() }
         ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
         return SessionTurnStartOutcome.CreateFailed(it)
-    }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
+    }.also { created ->
+        requireSameConversation()
+        repo.bindSession(origin, created, ChatTransportKind.SESSIONS)
+    }
     var runtime: RuntimeInfo? = null
     E2eLog.log("model intent=${intentLogName(intent)}")
-    if (intent != null && !(intent is PendingModelIntent.Clear && !wasExisting)) {
+    if (intent != null) {
         val result = when (intent) {
             is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
             PendingModelIntent.Clear -> client.clearSessionModel(sid)
         }
+        requireSameConversation()
         if (result.isFailure) {
             val error = result.exceptionOrNull()!!
             val h = error as? HermesHttpError
@@ -41,7 +48,9 @@ suspend fun startSessionTurn(
         runtime = result.getOrNull()?.runtime
         E2eLog.log("model intent=${intentLogName(intent)} ack=ok")
     }
-    if (intent != null) repo.consumePendingModelIntent(intent)
+    requireSameConversation()
+    if (intent != null) repo.consumePendingModelIntentDurably(intent, conversationId)
+    requireSameConversation()
     return SessionTurnStartOutcome.Started(sid, runtime)
 }
 
@@ -64,7 +73,6 @@ suspend fun resolveContinuation(
     client: HermesClient,
     baseUrl: String,
     apiKey: String,
-    hasMessages: Boolean,
 ): ContinuationPlan {
     return when (val gate = repo.verifySessionForCurrentOrigin(client, baseUrl, apiKey)) {
         is ConversationRepository.RebindOutcome.BlockedAuth,
@@ -77,7 +85,8 @@ suspend fun resolveContinuation(
             val currentOrigin = originIdentity(baseUrl, apiKey)
             val caps = CapabilityRegistry.capabilities(currentOrigin) { client.getCapabilities() }
             val decision = ChatTransportSelector.decide(
-                caps, repo.transport, repo.origin, currentOrigin, hasMessages,
+                caps, repo.transport, repo.origin, currentOrigin,
+                hasMessages = repo.messages.any { !it.isError },
             )
             E2eLog.log("continuation caps=${caps.state} gate=${gateName(gate)} decision=${decision::class.simpleName}")
             ContinuationPlan.Send(decision)

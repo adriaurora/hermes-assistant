@@ -1,6 +1,7 @@
 package dk.foss.jarvis.hermes
 
 import dk.foss.jarvis.hermes.HermesJson
+import dk.foss.jarvis.net.BlockedRequest
 import dk.foss.jarvis.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,14 +20,41 @@ class StreamClosedBeforeTerminalError : RuntimeException("stream closed before t
 
 /**
  * Talks to a Hermes `api_server`. This is the ONLY coupling to Hermes:
- * OpenAI-compatible `/v1/chat/completions` (streamed via SSE), plus the
- * session-history, model-inventory and connection-test endpoints. Bearer
- * auth; session continuity via X-Hermes-Session-Id.
+ * Session chat, history, model-inventory and capability endpoints. Bearer auth.
+ *
+ * ## Network gate
+ *
+ * Before constructing an instance, the caller MUST validate the base URL through
+ * the network gate:
+ *
+ * ```
+ * Http.gate().validate(baseUrl)
+ * val client = HermesClient(baseUrl, apiKey)
+ * ```
+ *
+ * On JVM tests the testing gate is used instead:
+ *
+ * ```
+ * Http.testingGate.validate(baseUrl)
+ * ```
+ *
+ * HTTPS is always allowed; HTTP only for explicitly approved endpoints.
+ * The gate is checked at construction time in tests, and on Android it uses
+ * the globally set [Http.applicationContext].
  */
 class HermesClient(
     private val baseUrl: String,
     private val apiKey: String,
 ) {
+    /** Resolve the network gate for this build variant. */
+    private fun getGate(): dk.foss.jarvis.net.NetworkGate {
+        // On Android (production), use the globally set Http.gate.
+        // On JVM tests (no context), use the testing gate.
+        val ctx = Http.applicationContext
+        if (ctx != null) return Http.gate()
+        return Http.testingGate
+    }
+
     interface StreamCallbacks {
         fun onDelta(textDelta: String)
         fun onSessionId(id: String) {}
@@ -42,85 +70,10 @@ class HermesClient(
         fun onRuntime(info: RuntimeInfo) {}
     }
 
-    fun streamChat(
-        messages: List<ChatMessage>,
-        sessionId: String?,
-        cb: StreamCallbacks,
-        model: String? = null,
-    ): EventSource {
-        E2eLog.log("chat transport=LEGACY endpoint=POST /v1/chat/completions model=${model ?: "null"}")
-        val body = HermesJson.encodeToString(
-            ChatRequest.serializer(),
-            ChatRequest(model = model, messages = messages, stream = true),
-        )
-        val builder = Request.Builder()
-            .url("$baseUrl/v1/chat/completions")
-            .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("Accept", "text/event-stream")
-            .post(body.toRequestBody(JSON_MEDIA))
-        if (!sessionId.isNullOrEmpty()) builder.addHeader("X-Hermes-Session-Id", sessionId)
-
-        // The stream signals end twice (the "[DONE]" event AND onClosed) — make sure
-        // the terminal callback fires exactly once.
-        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
-        val sawTerminalEvent = java.util.concurrent.atomic.AtomicBoolean(false)
-
-        val listener = object : EventSourceListener() {
-            override fun onOpen(eventSource: EventSource, response: Response) {
-                response.header("X-Hermes-Session-Id")?.let { cb.onSessionId(it) }
-            }
-
-            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                if (data.isBlank() || data == "[DONE]") {
-                    if (data == "[DONE]") {
-                        sawTerminalEvent.set(true)
-                        if (finished.compareAndSet(false, true)) cb.onComplete()
-                    }
-                    return
-                }
-                if (type == TOOL_PROGRESS_EVENT) {
-                    runCatching { HermesJson.decodeFromString(ToolProgress.serializer(), data) }.getOrNull()
-                        ?.let { p ->
-                            val label = p.label?.takeIf { it.isNotBlank() } ?: p.tool
-                            cb.onToolProgress(p.tool, label, running = p.status.equals("running", ignoreCase = true))
-                        }
-                    return
-                }
-                try {
-                    val chunk = HermesJson.decodeFromString(StreamChunk.serializer(), data)
-                    val delta = chunk.choices.firstOrNull()?.delta?.content
-                    if (!delta.isNullOrEmpty()) cb.onDelta(delta)
-                } catch (_: Exception) {
-                    // keep-alive comment or non-JSON line — ignore
-                }
-            }
-
-            override fun onClosed(eventSource: EventSource) {
-                if (finished.compareAndSet(false, true)) {
-                    if (sawTerminalEvent.get()) cb.onComplete()
-                    else cb.onError(StreamClosedBeforeTerminalError())
-                }
-            }
-
-            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                if (!finished.compareAndSet(false, true)) return
-                val error: Throwable = when {
-                    response != null && !response.isSuccessful -> {
-                        val detail = runCatching { response.body?.string() }.getOrNull()?.take(300)
-                        httpError(response.code, detail.orEmpty(), response.message)
-                    }
-                    t != null -> t
-                    else -> RuntimeException("Connection failed")
-                }
-                cb.onError(error)
-            }
-        }
-        return EventSources.createFactory(Http.streaming).newEventSource(builder.build(), listener)
-    }
-
     /** GET /v1/models — returns model ids on success, or a failure with the reason. */
     suspend fun testConnection(): Result<List<String>> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             val req = Request.Builder()
                 .url("$baseUrl/v1/models")
                 .addHeader("Authorization", "Bearer $apiKey")
@@ -152,6 +105,7 @@ class HermesClient(
     /** DELETE /api/sessions/{id} — removes a session (and its transcript) server-side. */
     suspend fun deleteSession(sessionId: String): Result<SessionDeleted> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}")
                 .addHeader("Authorization", "Bearer $apiKey")
@@ -178,6 +132,7 @@ class HermesClient(
     /** POST /api/sessions/{id}/model — sets a model lock on a server session. */
     suspend fun setSessionModel(sessionId: String, model: String): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             val bodyString = HermesJson.encodeToString(ModelSetRequest.serializer(), ModelSetRequest(model))
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/model")
@@ -201,6 +156,7 @@ class HermesClient(
     /** POST /api/sessions/{id}/model — clears the model lock (model:null). */
     suspend fun clearSessionModel(sessionId: String): Result<ModelLockResponse> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             // The API distinguishes an explicit null (clear) from an omitted field.
             val bodyString = "{\"model\":null}"
             val req = Request.Builder()
@@ -225,6 +181,7 @@ class HermesClient(
     /** GET /v1/capabilities — feature discovery. */
     suspend fun getCapabilities(): Result<ServerFeatures> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             val req = Request.Builder().url("$baseUrl/v1/capabilities").addHeader("Authorization", "Bearer $apiKey").get().build()
             Http.base.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
@@ -236,6 +193,7 @@ class HermesClient(
 
     suspend fun createSession(title: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             val body = HermesJson.encodeToString(SessionCreateRequest.serializer(), SessionCreateRequest(title))
             val req = Request.Builder().url("$baseUrl/api/sessions").addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(JSON_MEDIA)).build()
@@ -251,6 +209,7 @@ class HermesClient(
     }
 
     fun streamSessionTurn(sessionId: String, message: String, cb: StreamCallbacks): EventSource {
+        getGate().validate(baseUrl)
         E2eLog.log("chat transport=SESSIONS sid=$sessionId endpoint=POST /api/sessions/$sessionId/chat/stream")
         val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
         val builder = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat/stream")
@@ -299,6 +258,7 @@ class HermesClient(
 
     suspend fun sendSessionTurn(sessionId: String, message: String): Result<SessionTurnResult> = withContext(Dispatchers.IO) {
         runCatching {
+            getGate().validate(baseUrl)
             E2eLog.log("chat transport=SESSIONS sid=$sessionId endpoint=POST /api/sessions/$sessionId/chat")
             val body = HermesJson.encodeToString(SessionTurnRequest.serializer(), SessionTurnRequest(message))
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/chat").addHeader("Authorization", "Bearer $apiKey")
@@ -316,6 +276,7 @@ class HermesClient(
     private suspend fun <T> getJson(path: String, serializer: kotlinx.serialization.KSerializer<T>): Result<T> =
         withContext(Dispatchers.IO) {
             runCatching {
+                getGate().validate(baseUrl)
                 val req = Request.Builder()
                     .url("$baseUrl/$path")
                     .addHeader("Authorization", "Bearer $apiKey")

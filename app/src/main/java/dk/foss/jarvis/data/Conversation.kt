@@ -9,8 +9,18 @@ data class UiMessage(val role: String, val text: String, val isError: Boolean = 
 @Serializable
 data class StoredMessage(val role: String, val text: String)
 
+/** Wire-neutral representation of a model operation waiting for its ACK. */
+@Serializable
+data class StoredPendingModelIntent(
+    val kind: String,
+    val modelId: String? = null,
+    val label: String? = null,
+)
+@Serializable
+data class PendingModelDraft(val conversationId: String, val intent: StoredPendingModelIntent)
+
 /** A full saved conversation. */
-/** Sessions identity is unrelated to FCM device_id, legacy_device_id, event ids, or push protocol. */
+/** Sessions identity is unrelated to FCM device_id, event ids, or push protocol. */
 @Serializable
 data class Conversation(
     val id: String,

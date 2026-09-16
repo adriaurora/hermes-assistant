@@ -36,6 +36,11 @@ class FcmRevokeCleanupV1Test {
         return Triple(PushPrefs(ds), s, DeviceRegistryStore(s))
     }
 
+    private fun makeSettingsStore(): SettingsStore {
+        val ds = PreferenceDataStoreFactory.create { File(tmp.newFolder(), "settings.preferences_pb") }
+        return SettingsStore(ds, SecureStore(FakeCipher(), MemBlobs()))
+    }
+
     @Test fun v1SaveV1LoadsWithDeviceSecret() = runBlocking {
         val (p, s, r) = make()
         r.saveV1("dev-v1", "secret-v1", "push-endpoint", "http://hermes", "api-key")
@@ -61,7 +66,7 @@ class FcmRevokeCleanupV1Test {
         p.setPendingRevoke(true)
         p.setPendingCredentialClear(true)
 
-        FcmRevokeCleanup.onComplete(r, s, p) {}
+        FcmRevokeCleanup.onComplete(r, s, p, makeSettingsStore()) {}
 
         // All registry fields cleared
         assertNull(r.load())
@@ -86,7 +91,7 @@ class FcmRevokeCleanupV1Test {
         p.setPendingRevoke(true)
         p.setPendingCredentialClear(false)
 
-        FcmRevokeCleanup.onComplete(r, s, p) {}
+        FcmRevokeCleanup.onComplete(r, s, p, makeSettingsStore()) {}
 
         // Registry cleared
         assertNull(r.load())
@@ -106,7 +111,7 @@ class FcmRevokeCleanupV1Test {
         p.setPendingRevoke(true)
 
         var called = false
-        FcmRevokeCleanup.onComplete(r, s, p) {
+        FcmRevokeCleanup.onComplete(r, s, p, makeSettingsStore()) {
             called = true
             p.setRegistrationState(FcmRegistrationState.REGISTERING)
         }

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security configuration for Hermes Assistant.
+
+  The app enforces HTTPS by default via its own NetworkGate.  This XML
+  configuration allows cleartext at the platform level so that the app gate
+  can make the final decision per-endpoint.
+
+  The Android platform policy is the broad boundary; NetworkGate is the
+  strict policy: HTTPS always allowed, HTTP only for explicitly approved
+  origins, malformed URLs always blocked.
+
+  In debug builds the manifest overlay sets usesCleartextTraffic="true"
+  so that LAN HTTP is reachable once approved.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <!-- TLS verification is preserved: no overrides here. -->
+    </base-config>
+</network-security-config>

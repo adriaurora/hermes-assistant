@@ -16,7 +16,6 @@ data class DeviceRegistration(
 /** Keystore-backed local identity and pinned push credentials. */
 sealed interface RegistryState {
     data class Registered(val registration: DeviceRegistration) : RegistryState
-    data class LegacyPending(val deviceId: String, val pushEndpoint: String) : RegistryState
     object Empty : RegistryState
 }
 
@@ -43,7 +42,7 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
             if (apiKey == null) secure.savePushApiKey(settings.apiKey)
             return RegistryState.Registered(DeviceRegistration(id, endpoint, boundOrigin, apiKey ?: settings.apiKey, secure.loadDeviceSecret()))
         }
-        return RegistryState.LegacyPending(id, endpoint)
+        return RegistryState.Empty
     }
 
     fun saveV1(deviceId: String, deviceSecret: String, pushEndpoint: String, hermesOrigin: String, apiKey: String) {

@@ -1,5 +1,7 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -24,6 +26,8 @@ class SessionWireTest {
     @Before
     fun setUp() {
         server.start()
+        val origin = canonicalEndpointIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
     }
 
     @After

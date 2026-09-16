@@ -20,6 +20,7 @@ class EventFetcher(
     private val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
     private val wasDelivered: suspend (String) -> Boolean = { false },
     private val onDelivered: suspend (String) -> Unit = {},
+    private val expectedDeviceId: String? = null,
 ) {
     suspend fun onPushWoken(eventId: String): Result<Boolean> {
         if (!isValidHermesEventId(eventId)) return Result.failure(IllegalArgumentException("invalid event id"))
@@ -45,6 +46,14 @@ class EventFetcher(
             deduper.forget(eventId)
             return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
                 cause = IllegalArgumentException("event_id does not match requested id")))
+        }
+        if (expectedDeviceId != null && event.device_id != null && event.device_id != expectedDeviceId) {
+            deduper.forget(eventId)
+            return Result.failure(IllegalArgumentException("event device_id mismatch"))
+        }
+        if (event.expires_at != null && event.expires_at <= now()) {
+            deduper.forget(eventId)
+            return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
         }
         val envelope = EventMapper.toEnvelope(event)
         // Keep the clock dependency available for callers that enforce expiry at presentation time.
@@ -87,6 +96,10 @@ class EventDispatcher(
     private val deduper: NotificationDeduper = NotificationDeduper(),
     private val wasDelivered: suspend (String) -> Boolean = { false },
     private val onDelivered: suspend (String) -> Unit = {},
+    private val expectedDeviceId: String? = null,
+    private val onDeliveryRejected: suspend (String) -> Unit = {},
+    private val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
+    private val onReserved: suspend (String) -> Unit = {},
     private val notify: (HermesEventEnvelope, Int) -> Unit,
 ) {
     private val fetcher = EventFetcher(client, deduper)
@@ -116,9 +129,19 @@ class EventDispatcher(
             return Result.failure(EventFetchException(FetchFailureKind.SERIALIZATION,
                 cause = IllegalArgumentException("event_id does not match requested id")))
         }
+        if (expectedDeviceId != null && event.device_id != null && event.device_id != expectedDeviceId) {
+            deduper.forget(eventId)
+            return Result.failure(IllegalArgumentException("event device_id mismatch"))
+        }
+        if (event.expires_at != null && event.expires_at <= now()) {
+            deduper.forget(eventId)
+            return client.ack(eventId).fold({ Result.success(false) }, { Result.failure(it) })
+        }
         val envelope = EventMapper.toEnvelope(event)
+        onReserved(eventId)
         try { notify(envelope, StableNotificationId.forEvent(eventId)) }
         catch (failure: Throwable) {
+            onDeliveryRejected(eventId)
             deduper.forget(eventId)
             return Result.failure(failure)
         }

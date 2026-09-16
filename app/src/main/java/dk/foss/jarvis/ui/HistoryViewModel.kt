@@ -40,7 +40,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             val local = repo.list()
             val remote = fetchServerSessions()
-            items.value = merge(local, remote)
+            items.value = merge(local, remote, originIdentity(s.baseUrl, s.apiKey))
         }
     }
 
@@ -56,11 +56,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>): List<HistoryEntry> {
+    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>, currentOrigin: String): List<HistoryEntry> {
         val entries = mutableListOf<HistoryEntry>()
         val boundSessions = mutableSetOf<String>()
         for (m in local) {
-            m.sessionId?.let { boundSessions.add(it) }
+            if (m.origin == currentOrigin) m.sessionId?.let { boundSessions.add(it) }
             entries.add(
                 HistoryEntry(
                     key = m.id,
@@ -94,11 +94,24 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         return entries.sortedByDescending { it.updatedAt }
     }
 
+    /** Resolve a server session to a local mirror or hydrate it through the API. */
+    fun openNotificationSession(sessionId: String, onReady: () -> Unit) {
+        viewModelScope.launch {
+            val s = settingsStore.settings.first()
+            if (!s.isConfigured) {
+                notice.value = "Configure Hermes in Settings first"
+                return@launch
+            }
+            val mirror = findLocalSessionMirror(repo.list(), sessionId, originIdentity(s.baseUrl, s.apiKey))
+            if (mirror != null) open(mirror, onReady)
+            else openServer(sessionId, "Hermes conversation", System.currentTimeMillis(), onReady)
+        }
+    }
+
     /** Persist the current conversation, load the chosen one, then continue. */
     fun open(id: String, onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.open(id)
+            repo.open(id) // serializes with any pending save and replaces active state atomically
             E2eLog.log("historyOpen id=${repo.activeConversationId} transport=${repo.transport} sessionId=${repo.sessionId}")
             // If this is a SESSIONS conversation bound to the current server,
             // try to refresh messages from the server (authoritative copy).
@@ -151,10 +164,9 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
             // Resolve capabilities to pick the right transport — fail-closed on UNKNOWN.
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            val transport = when (caps.state) {
-                CapabilityState.SUPPORTED -> if (caps.features.session_chat) ChatTransportKind.SESSIONS else ChatTransportKind.LEGACY_CHAT
-                CapabilityState.UNSUPPORTED -> ChatTransportKind.LEGACY_CHAT
-                else -> null // UNKNOWN or caps null → fail-closed: no transport, no import
+            val transport = when {
+                caps.state == CapabilityState.SUPPORTED && caps.features.session_chat -> ChatTransportKind.SESSIONS
+                else -> null // UNKNOWN, unsupported, or explicit session_chat=false → fail closed
             }
             if (transport == null) {
                 notice.value = "Server capabilities could not be verified. Session import skipped."
@@ -172,17 +184,26 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     repo.persist()
                     repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs, origin = origin, transport = transport)
+                    repo.persist()
                     onReady()
                 },
-                onFailure = { err: Throwable -> notice.value = "Could not load session: ${err.message?.take(120)}" },
+                onFailure = { err: Throwable ->
+                    // Network and protocol failures are useful in diagnostics, but are not
+                    // product-facing text (they may contain socket/HTTP implementation details).
+                    E2eLog.log("historyImportFailed type=${err::class.java.simpleName}")
+                    notice.value = when ((err as? HermesHttpError)?.code) {
+                        401, 403 -> "Authentication failed while loading this session."
+                        404 -> "This session no longer exists in Hermes."
+                        else -> "Could not load this session. Try again later."
+                    }
+                },
             )
         }
     }
 
     fun startNew(onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.startNew()
+            repo.startNewAtomically()
             onReady()
         }
     }

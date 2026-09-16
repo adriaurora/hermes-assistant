@@ -1,5 +1,7 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -23,6 +25,9 @@ class CapabilityRegistryTest {
     @Before
     fun setUp() {
         server.start()
+        // Approve the mock server origin in the test gate
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
     }
 
     @After
@@ -127,6 +132,13 @@ class CapabilityRegistryTest {
         val server2 = MockWebServer()
         server1.start()
         server2.start()
+
+        // Approve both mock servers in the test gate
+        val origin1 = originIdentity(server1.url("/").toString().trimEnd('/'))
+        val origin2 = originIdentity(server2.url("/").toString().trimEnd('/'))
+        val s = Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore
+        s.addSync(origin1)
+        s.addSync(origin2)
 
         server1.enqueue(MockResponse().setResponseCode(200).setBody("""{"features":{"session_chat":true}}"""))
         server2.enqueue(MockResponse().setResponseCode(404))

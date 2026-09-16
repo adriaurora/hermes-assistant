@@ -66,7 +66,7 @@ Verification = clean compile + tests + the running app on a device.
 | Assistant | `assist/JarvisInteractionService.kt`, `JarvisInteractionSessionService.kt`, `JarvisInteractionSession.kt`, `JarvisRecognitionService.kt` | Default-assistant role; long-press launches conversation mode. |
 | UI / design | `MainActivity.kt`, `ui/*Screen.kt`, `ui/Theme.kt`, `ui/JarvisDesign.kt` | Compose screens + the "Direction A" design system. |
 | Notifications | `push/FcmMessagingService.kt` | FCM `FirebaseMessagingService`; data-only wakes with `event_id` → WorkManager `FcmEventWorker`. |
-| Events | `hermes/EventClient.kt` | Authenticated REST: register/update/revoke device, fetch/ack/pending events. |
+| Events | `push/FcmEventWorker.kt`, `hermes/EventRpc.kt` | V1 RPC: device.register, event fetch/ack/pending, device token update/revoke. |
 | Delivery | `notifications/EventDelivery.kt`, `notifications/NotificationChannels.kt` | Dedup, fetch, post native notification, ACK (best-effort). |
 
 **Chat transport and session invariants.** `Conversation` persists the

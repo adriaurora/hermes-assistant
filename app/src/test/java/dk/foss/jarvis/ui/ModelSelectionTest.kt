@@ -52,6 +52,28 @@ class ModelSelectionTest {
         assertEquals("session_model_lock", m.effective?.routeSource)
     }
 
+    @Test fun `request is pending until set ack`() {
+        val m = mk()
+        m.onSetRequested("m1", "Model A")
+        assertEquals("Automatic", m.state.label)
+        assertFalse(m.state.locked)
+        assertEquals("m1", m.state.pendingModelId)
+        assertEquals("Model A", m.state.pendingLabel)
+        m.onSetAck("Model A", RuntimeInfo(model = "m1"))
+        assertNull(m.state.pendingModelId)
+        assertNull(m.state.pendingLabel)
+        assertEquals("Model A", m.state.label)
+    }
+
+    @Test fun `rejected request remains pending for retry`() {
+        val m = mk()
+        m.onSetRequested("m1", "Model A")
+        m.onRejected()
+        assertEquals("m1", m.state.pendingModelId)
+        assertEquals("Model A", m.state.pendingLabel)
+        assertEquals("Automatic", m.state.label)
+    }
+
     // 4. Rejection after set ack retains prior state
     @Test fun `onRejected_retains_prior_label_and_locked`() {
         val m = mk()

@@ -1,5 +1,6 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.BlockedRequest
 import dk.foss.jarvis.net.Http
 import dk.foss.jarvis.push.isValidHermesEventId
 import kotlinx.coroutines.Dispatchers
@@ -17,11 +18,29 @@ import java.io.IOException
 const val RPC_PROTOCOL_VERSION = 1
 const val RPC_PATH = "api/platforms/hermes_assistant/events"
 
+/** Minimal API for durable event operations (fetch, ack, pending). Implemented by [EventRpcClient]. */
+interface EventApi {
+    suspend fun fetchEvent(id: String): Result<HermesEvent>
+    suspend fun ack(id: String): Result<Unit>
+    suspend fun pending(): Result<HermesEventsPage>
+}
+
+enum class FetchFailureKind { HTTP, SERIALIZATION, NETWORK, OTHER }
+
+class EventFetchException(
+    val kind: FetchFailureKind,
+    val statusCode: Int? = null,
+    cause: Throwable? = null,
+    val rpcCode: String? = null,
+) : Exception("event fetch failed: ${kind.name.lowercase()}${statusCode?.let { " ($it)" }.orEmpty()}${rpcCode?.let { " [$it]" }.orEmpty()}", cause)
+
+class HermesHttpException(val statusCode: Int, cause: Throwable? = null) : IOException("HTTP $statusCode", cause)
+
 @Serializable
 data class RpcErrorBody(val code: String, val message: String? = null, @kotlinx.serialization.SerialName("http_status") val httpStatus: Int? = null)
 
 @Serializable
-data class RpcRegisterResult(val device_id: String, val device_secret: String? = null, val state: String? = null, val existing: Boolean = false, @kotlinx.serialization.SerialName("legacy_reconciled") val legacy_reconciled: Boolean? = null)
+data class RpcRegisterResult(val device_id: String, val device_secret: String? = null, val state: String? = null, val existing: Boolean = false)
 
 @Serializable
 data class RpcDeviceStateResult(val device_id: String? = null, val state: String? = null, val event_id: String? = null)
@@ -38,7 +57,7 @@ private data class RpcEnvelope(
 )
 
 @Serializable private data class RpcPushBody(val type: String = "fcm", val token: String)
-@Serializable private data class RpcRegisterBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.register", val label: String, val push: RpcPushBody, val device_id: String? = null, val device_secret: String? = null, @kotlinx.serialization.SerialName("legacy_device_id") val legacy_device_id: String? = null)
+@Serializable private data class RpcRegisterBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.register", val label: String, val push: RpcPushBody, val device_id: String? = null, val device_secret: String? = null)
 @Serializable private data class RpcTokenBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.token.update", val device_id: String, val device_secret: String, val push_token: String)
 @Serializable private data class RpcRevokeBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "device.revoke", val device_id: String, val device_secret: String)
 @Serializable private data class RpcGetBody(val protocol_version: Int = RPC_PROTOCOL_VERSION, val type: String = "event.get", val device_id: String, val device_secret: String, val event_id: String)
@@ -50,17 +69,34 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
     private val url = "${baseUrl.trimEnd('/')}/$RPC_PATH"
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null, legacyDeviceId: String? = null): Result<RpcRegisterResult> =
-        call(RpcRegisterBody(label = label, push = RpcPushBody(token = token), device_id = deviceId, device_secret = deviceSecret, legacy_device_id = legacyDeviceId), RpcRegisterResult.serializer())
+    /** Resolve the network gate; uses production gate on Android. */
+    private fun resolveGate(): dk.foss.jarvis.net.NetworkGate {
+        // On Android (production), use the globally set Http.gate.
+        // On JVM tests (no context), use the testing gate.
+        val ctx = Http.applicationContext
+        if (ctx != null) return Http.gate()
+        return Http.testingGate
+    }
+
+    suspend fun register(label: String, token: String, deviceId: String? = null, deviceSecret: String? = null): Result<RpcRegisterResult> =
+        call(RpcRegisterBody(label = label, push = RpcPushBody(token = token), device_id = deviceId, device_secret = deviceSecret), RpcRegisterResult.serializer())
 
     suspend fun updateToken(token: String): Result<Unit> {
         val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
         return call(RpcTokenBody(device_id = creds.first, device_secret = creds.second, push_token = token), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
     }
 
+    /**
+     * Revoke the FCM device registration.
+     *
+     * Uses the cleanup validation scope ([NetworkGate.validateForCleanup]) so
+     * that the revoke worker can still reach the old endpoint after the user
+     * has switched to a new one — the old origin was moved to the cleanup
+     * allowance atomically before this call is made.
+     */
     suspend fun revoke(): Result<Unit> {
         val creds = credentials() ?: return Result.failure(IllegalStateException("A registered device is required"))
-        return call(RpcRevokeBody(device_id = creds.first, device_secret = creds.second), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
+        return callForRevoke(RpcRevokeBody(device_id = creds.first, device_secret = creds.second), RpcDeviceStateResult.serializer(), acceptsNull = true).map { Unit }
     }
 
     override suspend fun fetchEvent(id: String): Result<HermesEvent> {
@@ -87,6 +123,7 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
 
     suspend fun probe(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
+            resolveGate().validate(baseUrl)
             val body = HermesJson.encodeToString(RpcProbeBody.serializer(), RpcProbeBody())
             val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $apiKey").addHeader("Content-Type", "application/json; charset=utf-8").post(body.toRequestBody(jsonMedia)).build()
             Http.base.newCall(request).execute().use { it.code }
@@ -97,6 +134,7 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
 
     private suspend fun <T> call(body: Any, serializer: KSerializer<T>, acceptsNull: Boolean = false): Result<T> = withContext(Dispatchers.IO) {
         runCatching {
+            resolveGate().validate(baseUrl)
             val encoded = when (body) {
                 is RpcRegisterBody -> HermesJson.encodeToString(RpcRegisterBody.serializer(), body)
                 is RpcTokenBody -> HermesJson.encodeToString(RpcTokenBody.serializer(), body)
@@ -124,12 +162,47 @@ class EventRpcClient(private val baseUrl: String, private val apiKey: String, pr
         }.recoverCatching { throw classify(it) }
     }
 
+    /**
+     * Revoke-specific call path that validates using the cleanup allowance.
+     * Used by [revoke] so that the FCM revoke worker can reach the old
+     * endpoint after the user has switched to a new one.
+     */
+    private suspend fun <T> callForRevoke(body: Any, serializer: KSerializer<T>, acceptsNull: Boolean = false): Result<T> = withContext(Dispatchers.IO) {
+        runCatching {
+            val gate = resolveGate()
+            // Use cleanup scope validation for revoke operations.
+            gate.validateForCleanup(baseUrl)
+            val encoded = when (body) {
+                is RpcRevokeBody -> HermesJson.encodeToString(RpcRevokeBody.serializer(), body)
+                else -> error("unsupported RPC body")
+            }
+            val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $apiKey").addHeader("Content-Type", "application/json; charset=utf-8").post(encoded.toRequestBody(jsonMedia)).build()
+            Http.base.newCall(request).execute().use { response ->
+                if (response.code !in 200..299) throw HermesHttpException(response.code)
+                val envelope = HermesJson.decodeFromString(RpcEnvelope.serializer(), response.body?.string().orEmpty())
+                if (envelope.protocol_version != null && envelope.protocol_version != RPC_PROTOCOL_VERSION) throw RpcLogicError("unsupported_protocol", "protocol_version ${envelope.protocol_version}", null)
+                if (!envelope.ok) {
+                    val e = envelope.error
+                    throw if (e == null) RpcLogicError("invalid_response", null, null) else RpcLogicError(e.code, e.message, e.httpStatus)
+                }
+                val result = envelope.result
+                if (result == null || result is JsonNull) {
+                    @Suppress("UNCHECKED_CAST")
+                    if (acceptsNull) Unit as T else throw RpcLogicError("invalid_response", null, null)
+                } else HermesJson.decodeFromJsonElement(serializer, result)
+            }
+        }.recoverCatching { throw classify(it) }
+    }
+
     private fun classify(error: Throwable): EventFetchException = when (error) {
         is EventFetchException -> error
         is RpcLogicError -> EventFetchException(FetchFailureKind.HTTP, error.httpStatus, error, error.code)
         is HermesHttpException -> EventFetchException(FetchFailureKind.HTTP, error.statusCode, error)
         is SerializationException -> EventFetchException(FetchFailureKind.SERIALIZATION, cause = error)
         is IOException -> EventFetchException(FetchFailureKind.NETWORK, cause = error)
+        is dk.foss.jarvis.net.BlockedRequest -> EventFetchException(
+            FetchFailureKind.HTTP, 403, error, "network_blocked",
+        )
         else -> EventFetchException(FetchFailureKind.OTHER, cause = error)
     }
 }

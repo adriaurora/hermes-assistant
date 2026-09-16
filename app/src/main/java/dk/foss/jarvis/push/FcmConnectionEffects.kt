@@ -12,10 +12,6 @@ class FcmConnectionEffects(private val pushState: PushState, private val registr
         val state = registry.loadOrMigrate(old)
         val existing = (state as? RegistryState.Registered)?.registration
         val transition = ConnectionTransition.decide(old, new, existing)
-        if (state is RegistryState.LegacyPending) {
-            if (transition.credentialClear) { registry.clear(); pushState.setPendingRevoke(false); pushState.setPendingCredentialClear(false); pushState.disable(); pushState.setRegistrationState(FcmRegistrationState.DISABLED) }
-            return
-        }
         if (new.apiKey.isNotEmpty()) pushState.setPendingCredentialClear(false)
         if (transition.credentialClear) {
             if (existing != null) { pushState.disable(); pushState.setPendingRevoke(true); pushState.setPendingCredentialClear(true); pushState.setRegistrationState(FcmRegistrationState.UNREGISTERING); onScheduleRevoke(); onCancelRegistrationWork() }

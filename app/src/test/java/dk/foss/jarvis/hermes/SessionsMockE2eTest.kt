@@ -3,6 +3,8 @@ package dk.foss.jarvis.hermes
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.ConversationStore
 import dk.foss.jarvis.data.UiMessage
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import dk.foss.jarvis.ui.ModelSelection
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -29,7 +31,15 @@ class SessionsMockE2eTest {
     private val originA = MockWebServer()
     private val originB = MockWebServer()
 
-    @Before fun start() { originA.start(); originB.start() }
+    @Before fun start() {
+        originA.start(); originB.start()
+        // Approve both mock server origins in the test gate
+        val originAUrl = originA.url("/").toString().trimEnd('/')
+        val originBUrl = originB.url("/").toString().trimEnd('/')
+        val s = Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore
+        s.addSync(originIdentity(originAUrl))
+        s.addSync(originIdentity(originBUrl))
+    }
     @After fun stop() { originA.shutdown(); originB.shutdown() }
 
     private fun base(server: MockWebServer) = server.url("/").toString().trimEnd('/')
@@ -53,7 +63,7 @@ class SessionsMockE2eTest {
         assertTrue(features.session_model_clear && features.model_options && features.chat_completions)
 
         val a = base(originA)
-        assertTrue(ChatTransportSelector.decide(OriginCapabilities(a, CapabilityState.SUPPORTED, features), null, null, a, false) is ChatTransportDecision.Sessions)
+        assertTrue(ChatTransportSelector.decide(OriginCapabilities(a, CapabilityState.SUPPORTED, features), null, null, a) is ChatTransportDecision.Sessions)
 
         originA.enqueue(MockResponse().setResponseCode(200).setBody("""{"object":"hermes.session","session":{"id":"sess_e2e_1","model":null}}"""))
         assertEquals("sess_e2e_1", client().createSession("First conversation").getOrThrow())
@@ -116,7 +126,7 @@ class SessionsMockE2eTest {
                 assertEquals(setOf("message"), Json.parseToJsonElement(body(r)).jsonObject.keys)
             }
         }
-        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b, true) is ChatTransportDecision.Unavailable); assertEquals(0, originB.requestCount)
+        val b = base(originB); assertTrue(ChatTransportSelector.decide(OriginCapabilities(b, CapabilityState.SUPPORTED, features), ChatTransportKind.SESSIONS, a, b) is ChatTransportDecision.Blocked); assertEquals(0, originB.requestCount)
     }
 
     @Test
