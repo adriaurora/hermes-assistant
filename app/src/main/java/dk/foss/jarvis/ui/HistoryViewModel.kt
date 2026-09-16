@@ -40,7 +40,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             val local = repo.list()
             val remote = fetchServerSessions()
-            items.value = merge(local, remote)
+            items.value = merge(local, remote, originIdentity(s.baseUrl, s.apiKey))
         }
     }
 
@@ -56,11 +56,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>): List<HistoryEntry> {
+    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>, currentOrigin: String): List<HistoryEntry> {
         val entries = mutableListOf<HistoryEntry>()
         val boundSessions = mutableSetOf<String>()
         for (m in local) {
-            m.sessionId?.let { boundSessions.add(it) }
+            if (m.origin == currentOrigin) m.sessionId?.let { boundSessions.add(it) }
             entries.add(
                 HistoryEntry(
                     key = m.id,
@@ -92,6 +92,20 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         return entries.sortedByDescending { it.updatedAt }
+    }
+
+    /** Resolve a server session to a local mirror or hydrate it through the API. */
+    fun openNotificationSession(sessionId: String, onReady: () -> Unit) {
+        viewModelScope.launch {
+            val s = settingsStore.settings.first()
+            if (!s.isConfigured) {
+                notice.value = "Configure Hermes in Settings first"
+                return@launch
+            }
+            val mirror = findLocalSessionMirror(repo.list(), sessionId, originIdentity(s.baseUrl, s.apiKey))
+            if (mirror != null) open(mirror, onReady)
+            else openServer(sessionId, "Hermes conversation", System.currentTimeMillis(), onReady)
+        }
     }
 
     /** Persist the current conversation, load the chosen one, then continue. */
@@ -170,6 +184,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     repo.persist()
                     repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs, origin = origin, transport = transport)
+                    repo.persist()
                     onReady()
                 },
                 onFailure = { err: Throwable ->

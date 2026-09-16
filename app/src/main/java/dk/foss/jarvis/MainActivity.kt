@@ -18,7 +18,6 @@ import dk.foss.jarvis.receivers.PushIngress
 import dk.foss.jarvis.push.FcmLifecycle
 import dk.foss.jarvis.notifications.HERMES_NOTIFICATION_TAP
 import dk.foss.jarvis.notifications.NotificationTapStore
-import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.ui.ChatScreen
 import dk.foss.jarvis.ui.ChatViewModel
 import dk.foss.jarvis.ui.ConversationScreen
@@ -32,7 +31,7 @@ private enum class Screen { Chat, Settings, Conversation, History }
 
 class MainActivity : ComponentActivity() {
     private var awaitingPushPermission = false
-    private var tappedSession: String? = null
+    private var tapRequest by mutableStateOf<Pair<String, String>?>(null)
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,24 +39,22 @@ class MainActivity : ComponentActivity() {
         // MainActivity is deliberately an ordinary app entry point. In
         // particular, neither ACTION_ASSIST nor notification extras are trust
         // signals here.
-        tappedSession = consumeTap(intent)
-        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, initialSession = tappedSession) }
+        tapRequest = consumeTap(intent)
+        setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, initialSession = tapRequest?.second, initialRequestKey = tapRequest?.first) }
         lifecycleScope.launch { runCatching { PushIngress.scheduleStartupWork(applicationContext) } }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        consumeTap(intent)?.let { session ->
-            // Recompose the explicit conversation route even when the launcher
-            // task was already alive; arbitrary intents never reach this path.
-            setContent { JarvisApp(this@MainActivity, startInConversation = false, onEnablePush = { requestPushEnable() }, initialSession = session) }
-        }
+        consumeTap(intent)?.let { tapRequest = it }
     }
 
-    private fun consumeTap(intent: android.content.Intent?): String? =
+    private fun consumeTap(intent: android.content.Intent?): Pair<String, String>? =
         if (intent?.action == HERMES_NOTIFICATION_TAP && intent.`package` == packageName)
-            intent.getStringExtra("tap_token")?.let { NotificationTapStore.consume(this, it) }
+            intent.getStringExtra("tap_token")?.let { token ->
+                NotificationTapStore.consume(this, token)?.let { session -> token to session }
+            }
         else null
 
     private fun requestPushEnable() {
@@ -88,15 +85,24 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}, initialSession: String? = null) {
+internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean, onEnablePush: () -> Unit = {}, initialSession: String? = null, initialRequestKey: String? = initialSession) {
     JarvisTheme {
-        var screen by remember { mutableStateOf(if (startInConversation || initialSession != null) Screen.Conversation else Screen.Chat) }
-        LaunchedEffect(initialSession) { initialSession?.let { ConversationRepository.get(activity).open(it) } }
+        var screen by remember { mutableStateOf(if (startInConversation) Screen.Conversation else Screen.Chat) }
+        val hvm: HistoryViewModel = viewModel()
+        val chatVm: ChatViewModel = viewModel()
+        LaunchedEffect(initialRequestKey) {
+            initialSession?.let { sessionId ->
+                chatVm.cancel()
+                screen = Screen.History
+                // Notification IDs belong to Hermes, not to the local file store.
+                // Use the history import path and never start voice implicitly.
+                hvm.openNotificationSession(sessionId) { screen = Screen.Chat }
+            }
+        }
         when (screen) {
                     Screen.Chat -> {
-                        val vm: ChatViewModel = viewModel()
                         ChatScreen(
-                            vm = vm,
+                            vm = chatVm,
                             onOpenSettings = { screen = Screen.Settings },
                             onOpenVoice = { screen = Screen.Conversation },
                             onOpenHistory = { screen = Screen.History },
@@ -122,7 +128,6 @@ internal fun JarvisApp(activity: ComponentActivity, startInConversation: Boolean
                     }
                     Screen.History -> {
                         BackHandler { screen = Screen.Chat }
-                        val hvm: HistoryViewModel = viewModel()
                         HistoryScreen(
                             vm = hvm,
                             onOpen = { screen = Screen.Chat },

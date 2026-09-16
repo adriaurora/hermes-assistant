@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import dk.foss.jarvis.MainActivity
 import dk.foss.jarvis.R
@@ -64,8 +65,16 @@ fun postReminderNotification(context: Context, envelope: HermesEventEnvelope, no
 }
 
 object NotificationPermission {
-    fun ensure(context: Context): Boolean = Build.VERSION.SDK_INT < 33 ||
-        androidx.core.content.ContextCompat.checkSelfPermission(
-            context, "android.permission.POST_NOTIFICATIONS",
-        ) == PackageManager.PERMISSION_GRANTED
+    fun ensure(context: Context): Boolean {
+        val runtimeAllowed = Build.VERSION.SDK_INT < 33 ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, "android.permission.POST_NOTIFICATIONS",
+            ) == PackageManager.PERMISSION_GRANTED
+        if (!runtimeAllowed || !NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+        val channel = context.getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(HERMES_REMINDERS_CHANNEL)
+        // notify() may return normally for a blocked channel. Do not interpret
+        // that as delivery and ACK an event the user could not see.
+        return channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
 }
