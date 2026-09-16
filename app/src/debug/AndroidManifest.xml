@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug-only override: allow cleartext HTTP so the app can reach a
-      self-hosted Hermes over a development LAN. Release builds
-     keep the platform default (cleartext denied). -->
+<!-- The common network-security config permits cleartext for the dynamic
+     HTTP opt-in policy in all variants. NetworkGate still blocks HTTP unless
+     this exact endpoint has been explicitly approved. This overlay retains
+     the explicit debug setting for development LAN compatibility. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:usesCleartextTraffic="true" />
 </manifest>

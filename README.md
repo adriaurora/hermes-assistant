@@ -60,11 +60,15 @@ The app enforces a **fail-closed** network gate:
 ### Platform cleartext and application gate
 
 The Android platform is configured to **allow cleartext** at the network
-security-config level (`cleartextTrafficPermitted="true"`), so the platform
-does not block HTTP traffic.  The **application gate** (`net/NetworkGate`) is
-the strict policy boundary: HTTPS always allowed; HTTP only for explicitly
-approved origins.  This separation means the platform permission is broad
-(permissive) and the application enforces a narrow, user-consented policy.
+security-config level (`cleartextTrafficPermitted="true"`) in order to support
+the product's dynamic, per-endpoint HTTP opt-in in both debug and release
+variants.  This platform setting does not itself authorize an endpoint.  The
+**application gate** (`net/NetworkGate`) is the strict policy boundary: HTTPS is
+allowed after validation, while HTTP remains blocked unless the exact endpoint
+has been explicitly approved.  All production Hermes/Event RPC call sites
+reviewed here validate through this gate before constructing an HTTP request.
+This is an application-policy control, not a formal security guarantee; users
+should prefer HTTPS whenever possible.
 
 ## Install
 
@@ -166,7 +170,7 @@ Android (Sessions)                    Hermes server                  FCM push
 | `net/ApprovedOriginsStore` | Persistent approved-HTTP-origins store (same DataStore + key as `SettingsStore`: `jarvis_settings` / `approved_http_origins`). |
 | `hermes/HermesClient` | Sessions API (`/api/sessions/*`) for chat and voice, with SSE streaming when advertised. Gate validates before every call. |
 | `data/SecureStore` | AES-256-GCM key held in AndroidKeyStore; encrypted blob in app-private SharedPreferences. |
-| `data/SettingsStore` | Base URL, API key, and approved HTTP origins (single DataStore source of truth). |
+| `data/SettingsStore` | Base URL and approved HTTP-origin metadata in DataStore; the API key is stored encrypted by `SecureStore` using AndroidKeyStore. |
 | `voice/SpeechInput` | STT via Android `SpeechRecognizer` (on-device where available). |
 | `voice/TtsEngine` | Android TTS; offline availability depends on the selected engine and voice. |
 | `ui/ConversationViewModel` | The listen → think → speak → listen loop. |

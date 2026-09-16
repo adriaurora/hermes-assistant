@@ -10,8 +10,10 @@
   strict policy: HTTPS always allowed, HTTP only for explicitly approved
   origins, malformed URLs always blocked.
 
-  In debug builds the manifest overlay sets usesCleartextTraffic="true"
-  so that LAN HTTP is reachable once approved.
+   The common config is intentionally permissive at the platform layer in all
+   variants because release also supports dynamic per-endpoint HTTP opt-in.
+   NetworkGate remains the application policy boundary and blocks unapproved
+   HTTP before requests are created.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
