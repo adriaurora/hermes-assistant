@@ -11,13 +11,16 @@ class ModelOperationCoordinationTest {
     @Test fun `current context applies but stale generation and binding do not`() = runBlocking {
         coroutineScope {
             val c = ModelOperationCoordinator(); val context = c.next("a", "origin", "s1")
-            var binding = "s1"; var applied = 0
-            assertEquals(1, c.run(context, { binding == context.sessionId }) { applied++; 1 })
+            var binding = "s1"; var origin = "origin"; var applied = 0
+            assertEquals(1, c.run(context, { binding == context.sessionId && origin == context.origin }) { applied++; 1 })
             binding = "s2"
             assertNull(c.run(context, { binding == context.sessionId }) { applied++; 2 })
             assertEquals(1, applied)
             val newer = c.next("a", "origin", "s2")
-            assertEquals(3, c.run(newer, { binding == newer.sessionId }) { applied++; 3 })
+            origin = "changed"
+            assertNull(c.run(newer, { binding == newer.sessionId && origin == newer.origin }) { applied++; 3 })
+            origin = "origin"
+            assertEquals(3, c.run(newer, { binding == newer.sessionId && origin == newer.origin }) { applied++; 3 })
         }
     }
     @Test fun `A then B drops A response and preserves B ordering`() = runBlocking {

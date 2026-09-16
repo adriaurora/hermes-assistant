@@ -83,7 +83,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshModel() {
         val conversationId = repo.activeConversationId
         val sessionId = repo.sessionId
-        val operation = modelCoordinator.next(conversationId, null, sessionId)
+        var operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
             modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
             if (!modelOperationCurrent(operation)) return@launch
@@ -96,6 +96,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             if (!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
+            operation = modelCoordinator.withOrigin(operation, originIdentity(s.baseUrl, s.apiKey))
             modelLoading.value = true
             val client = HermesClient(s.baseUrl, s.apiKey)
             val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
@@ -151,7 +152,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun chooseModel(option: ModelOption?) {
         val conversationId = repo.activeConversationId
         val sessionId = repo.sessionId
-        val operation = modelCoordinator.next(conversationId, null, sessionId)
+        var operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
             modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
             if (!modelOperationCurrent(operation)) return@launch
@@ -161,6 +162,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             if (!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelError.value = "Configure Hermes in Settings first"; return@launch }
+            operation = modelCoordinator.withOrigin(operation, originIdentity(s.baseUrl, s.apiKey))
 
             // Gates must not leave a stale intent behind. A real choice is queued
             // before verification (so a blocked verification can be retried).
@@ -232,7 +234,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun onSessionCaptured(sessionId: String) {
         val conversationId = repo.activeConversationId
         val pending = repo.pendingModelIntent ?: return
-        val operation = modelCoordinator.next(conversationId, null, repo.sessionId)
+        var operation = modelCoordinator.next(conversationId, null, repo.sessionId)
         if (pending is PendingModelIntent.Set) modelLabel.value = pending.label
         viewModelScope.launch {
             modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
@@ -240,6 +242,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 !modelOperationCurrent(operation)) return@launch
             val s = settingsStore.settings.first()
             if (!s.isConfigured) return@launch
+            operation = modelCoordinator.withOrigin(operation, originIdentity(s.baseUrl, s.apiKey))
             val client = HermesClient(s.baseUrl, s.apiKey)
             val result = when (pending) {
                 is PendingModelIntent.Set -> client.setSessionModel(sessionId, pending.modelId)
@@ -304,6 +307,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun modelOperationCurrent(operation: ModelOperationCoordinator.Context): Boolean =
         operation.conversationId == repo.activeConversationId && operation.sessionId == repo.sessionId &&
+            (operation.origin == null || repo.origin == operation.origin) &&
             modelCoordinator.isCurrent(operation) { true }
 
     private fun flattenModels(payload: ModelOptionsPayload): List<ModelOption> {
