@@ -57,6 +57,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var transitionInFlight = false
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    private val removeConversationListener = repo.onConversationSwitched {
+        cancel()
+        modelSelection.reset()
+        modelLabel.value = pendingModelLabel(repo.pendingModelIntent) ?: "Automatic"
+        effectiveRoute.value = null
+        sendBlocked.value = null
+    }
+
     init {
         // Restore the app-scoped active conversation after process recreation.
         viewModelScope.launch { repo.restoreLatest() }
@@ -120,7 +128,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = {
                     modelLoading.value = false
-                    modelError.value = "Models unavailable: ${it.message?.take(120)}"
+                    modelError.value = "Models are unavailable. Try again."
                 },
             )
         }
@@ -130,6 +138,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun chooseModel(option: ModelOption?) {
         viewModelScope.launch {
             modelError.value = null
+            val conversationId = repo.activeConversationId
             val sid = repo.sessionId
             E2eLog.log("chooseModel activeId=${repo.activeConversationId} sid=$sid option=${option?.modelId}")
             val s = settingsStore.settings.first()
@@ -182,7 +191,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         modelLabel.value = chosenLabel
                     }
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
-                    viewModelScope.launch { repo.consumePendingModelIntentDurably(intent) }
+                    viewModelScope.launch { repo.consumePendingModelIntentDurably(intent, conversationId) }
                     modelPickerOpen.value = false
                 },
                 onFailure = {
@@ -198,6 +207,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Called when a session is created and bound to the active conversation. */
     fun onSessionCaptured(sessionId: String) {
+        val conversationId = repo.activeConversationId
         val pending = repo.pendingModelIntent ?: return
         if (pending is PendingModelIntent.Set) modelLabel.value = pending.label
         viewModelScope.launch {
@@ -220,7 +230,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             modelSelection.onClearAck(it.runtime)
                         }
                     }
-                    viewModelScope.launch { repo.consumePendingModelIntentDurably(pending) }
+                    viewModelScope.launch { repo.consumePendingModelIntentDurably(pending, conversationId) }
                     effectiveRoute.value = EffectiveRoute.fromRuntime(it.runtime)
                 },
                 onFailure = {
@@ -238,7 +248,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid.isNullOrEmpty()) {
             modelSelection.reset()
             effectiveRoute.value = null
-            modelLabel.value = "Automatic"
+            modelLabel.value = pendingModelLabel(repo.pendingModelIntent) ?: "Automatic"
             return
         }
         val gate = repo.verifySessionForCurrentOrigin(client, baseUrl, apiKey)
@@ -354,7 +364,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             pending,
         )) {
             is SessionTurnStartOutcome.CreateFailed -> {
-                appendSystemError("Couldn't start a Hermes session: ${outcome.error.message?.take(120) ?: "unknown"}")
+                appendSystemError("Couldn't start a Hermes session. Try again.")
                 viewModelScope.launch { repo.persist() }
                 return
             }
@@ -396,6 +406,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun sendSessionStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
         val generation = streamGeneration
+        val expectedTranscript = repo.historyForRequest().dropLast(1)
         currentSource = client.streamSessionTurn(sid, userText, object : HermesClient.StreamCallbacks {
             override fun onDelta(textDelta: String) = onMain {
                 if (generation != streamGeneration) return@onMain
@@ -441,7 +452,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     // ever replaying the user's message.
                     isStreaming.value = true
                     viewModelScope.launch {
-                        reconcileStream(client, sid, assistantIndex, generation, streamError)
+                        reconcileStream(client, sid, assistantIndex, generation, streamError, expectedTranscript)
                     }
                     return@onMain
                 }
@@ -491,14 +502,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         assistantIndex: Int,
         generation: Int,
         originalError: Throwable,
+        expectedTranscript: List<ChatMessage>,
     ) {
         val result = client.getSessionMessages(sid, limit = 500)
         onMain {
             if (generation != streamGeneration) return@onMain
             val authoritative = result.getOrNull()?.data.orEmpty()
-            val lastUser = authoritative.indexOfLast { it.role == "user" }
-            val answer = if (lastUser >= 0) authoritative.drop(lastUser + 1)
-                .lastOrNull { it.role == "assistant" && it.content.isNotBlank() }?.content else null
+            val answer = reconciledAnswer(expectedTranscript, authoritative.map { ChatMessage(it.role, it.content) })
             if (answer != null) {
                 // Replace the local bubble, including partial deltas, so retries
                 // and reconnect callbacks cannot duplicate visible content.
@@ -521,8 +531,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun sendSessionTurnNonStreaming(client: HermesClient, sid: String, userText: String, assistantIndex: Int) {
+        val generation = streamGeneration
         val result = client.sendSessionTurn(sid, userText)
         onMain {
+            if (generation != streamGeneration) return@onMain
             result.fold(
                 onSuccess = { turnResult ->
                     val text = turnResult.text ?: "⚠️ No response content"
@@ -564,6 +576,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        removeConversationListener()
         cancel()
         uiScope.cancel()
         repo.persistAsync()

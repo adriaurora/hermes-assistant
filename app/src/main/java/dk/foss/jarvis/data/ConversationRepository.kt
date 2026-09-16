@@ -199,15 +199,21 @@ class ConversationRepository internal constructor(private val store: Conversatio
     /** Verify an existing Sessions id with the current credentials before rebinding it. */
     suspend fun verifySessionForCurrentOrigin(client: HermesClient, baseUrl: String, apiKey: String): RebindOutcome {
         val sid = sessionId ?: return RebindOutcome.NotNeeded
+        val conversationId = activeId
         if (transport != ChatTransportKind.SESSIONS) return RebindOutcome.NotNeeded
         val current = originIdentity(baseUrl, apiKey)
         if (origin == current) return RebindOutcome.NotNeeded
         return client.getSession(sid).fold(
             onSuccess = {
-                origin = current
-                store.rebindOrigin(activeId, current)
-                dirty = false
-                RebindOutcome.VerifiedRebound
+                lifecycleMutex.withLock {
+                    if (activeId != conversationId || sessionId != sid) {
+                        throw kotlinx.coroutines.CancellationException("Conversation changed")
+                    }
+                    origin = current
+                    dirty = true
+                    persistLocked()
+                    RebindOutcome.VerifiedRebound
+                }
             },
             onFailure = { e ->
                 val h = e as? HermesHttpError

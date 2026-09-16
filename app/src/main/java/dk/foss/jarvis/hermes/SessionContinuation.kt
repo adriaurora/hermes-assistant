@@ -20,10 +20,17 @@ suspend fun startSessionTurn(
     uniqueSuffix: String,
     intent: PendingModelIntent?,
 ): SessionTurnStartOutcome {
+    val conversationId = repo.activeConversationId
+    fun requireSameConversation() {
+        if (repo.activeConversationId != conversationId) throw kotlinx.coroutines.CancellationException("Conversation changed")
+    }
     val sid = repo.sessionId?.takeIf { it.isNotEmpty() }
         ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
         return SessionTurnStartOutcome.CreateFailed(it)
-    }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
+    }.also { created ->
+        requireSameConversation()
+        repo.bindSession(origin, created, ChatTransportKind.SESSIONS)
+    }
     var runtime: RuntimeInfo? = null
     E2eLog.log("model intent=${intentLogName(intent)}")
     if (intent != null) {
@@ -31,6 +38,7 @@ suspend fun startSessionTurn(
             is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
             PendingModelIntent.Clear -> client.clearSessionModel(sid)
         }
+        requireSameConversation()
         if (result.isFailure) {
             val error = result.exceptionOrNull()!!
             val h = error as? HermesHttpError
@@ -40,7 +48,9 @@ suspend fun startSessionTurn(
         runtime = result.getOrNull()?.runtime
         E2eLog.log("model intent=${intentLogName(intent)} ack=ok")
     }
-    if (intent != null) repo.consumePendingModelIntentDurably(intent)
+    requireSameConversation()
+    if (intent != null) repo.consumePendingModelIntentDurably(intent, conversationId)
+    requireSameConversation()
     return SessionTurnStartOutcome.Started(sid, runtime)
 }
 
