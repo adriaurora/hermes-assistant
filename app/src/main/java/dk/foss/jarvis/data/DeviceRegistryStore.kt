@@ -58,6 +58,19 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     }
 
     fun save(deviceId: String, pushEndpoint: String, hermesOrigin: String = "", apiKey: String = "") {
+        if (secure.hasDeviceRegistrationMarker()) {
+            val old = secure.loadDeviceRegistration()
+            if (old == null && secure.isDeviceRegistrationTombstone()) {
+                if (hermesOrigin.isNotEmpty() && apiKey.isNotEmpty()) secure.saveDeviceRegistration(DeviceRegistration(deviceId, pushEndpoint, hermesOrigin, apiKey))
+                return
+            }
+            old ?: return
+            secure.saveDeviceRegistration(old.copy(
+                deviceId = deviceId, pushEndpoint = pushEndpoint,
+                hermesOrigin = hermesOrigin.ifEmpty { old.hermesOrigin }, apiKey = apiKey.ifEmpty { old.apiKey },
+            ))
+            return
+        }
         secure.saveDeviceId(deviceId); secure.savePushEndpoint(pushEndpoint)
         if (hermesOrigin.isNotEmpty()) secure.savePushOrigin(hermesOrigin)
         if (apiKey.isNotEmpty()) secure.savePushApiKey(apiKey)
@@ -67,8 +80,9 @@ class DeviceRegistryStore internal constructor(private val secure: SecureStore) 
     }
     fun updateCredentials(apiKey: String) {
         if (apiKey.isNotEmpty()) {
-            secure.loadDeviceRegistration()?.let { secure.saveDeviceRegistration(it.copy(apiKey = apiKey)) }
-            secure.savePushApiKey(apiKey)
+            if (secure.hasDeviceRegistrationMarker()) {
+                secure.loadDeviceRegistration()?.let { secure.saveDeviceRegistration(it.copy(apiKey = apiKey)) }
+            } else secure.savePushApiKey(apiKey)
         }
     }
 

@@ -8,6 +8,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ModelOperationCoordinationTest {
+    @Test fun `current context applies but stale generation and binding do not`() = runBlocking {
+        coroutineScope {
+            val c = ModelOperationCoordinator(); val context = c.next("a", "origin", "s1")
+            var binding = "s1"; var applied = 0
+            assertEquals(1, c.run(context, { binding == context.sessionId }) { applied++; 1 })
+            binding = "s2"
+            assertNull(c.run(context, { binding == context.sessionId }) { applied++; 2 })
+            assertEquals(1, applied)
+            val newer = c.next("a", "origin", "s2")
+            assertEquals(3, c.run(newer, { binding == newer.sessionId }) { applied++; 3 })
+        }
+    }
     @Test fun `A then B drops A response and preserves B ordering`() = runBlocking {
       coroutineScope {
         val c = ModelOperationCoordinator(); var current = 0L; val applied = mutableListOf<String>()

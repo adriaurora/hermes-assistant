@@ -86,7 +86,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
             modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
             if (conversationId != lastSyncedConversationId) {
                 modelSelection.reset()
                 effectiveRoute.value = null
@@ -94,12 +94,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 lastSyncedConversationId = conversationId
             }
             val s = settingsStore.settings.first()
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelLoading.value = false; return@launch }
             modelLoading.value = true
             val client = HermesClient(s.baseUrl, s.apiKey)
             val gate = repo.verifySessionForCurrentOrigin(client, s.baseUrl, s.apiKey)
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
             E2eLog.log("refreshModel gate=${gate::class.simpleName}")
             when (gate) {
                 is ConversationRepository.RebindOutcome.BlockedAuth,
@@ -113,7 +113,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             val origin = originIdentity(s.baseUrl, s.apiKey)
             val caps = CapabilityRegistry.capabilities(origin) { client.getCapabilities() }
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
 
             if (caps.features.model_options && caps.features.session_model_lock) {
                 modelSelection.onSelectorAvailability(
@@ -154,12 +154,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val operation = modelCoordinator.next(conversationId, null, sessionId)
         viewModelScope.launch {
             modelCoordinator.run(operation, { modelOperationCurrent(operation) }) {
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
             modelError.value = null
             val sid = sessionId
             E2eLog.log("chooseModel activeId=${conversationId} sid=$sid option=${option?.modelId}")
             val s = settingsStore.settings.first()
-            if (!!modelOperationCurrent(operation)) return@launch
+            if (!modelOperationCurrent(operation)) return@launch
             if (!s.isConfigured) { modelError.value = "Configure Hermes in Settings first"; return@launch }
 
             // Gates must not leave a stale intent behind. A real choice is queued
