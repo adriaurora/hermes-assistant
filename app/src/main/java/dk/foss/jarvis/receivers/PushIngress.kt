@@ -141,7 +141,9 @@ object PushIngress {
             EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, existing.hermesOrigin, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> {
-                    registry.clear(); registerFresh()
+                    // Replace the record only after registration succeeds. A
+                    // transient failure must retain the previous identity.
+                    registerFresh()
                 }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
@@ -164,7 +166,6 @@ object PushIngress {
         val incomplete = registration == null || registration.deviceId.isBlank() ||
             registration.pushEndpoint.isBlank() || registration.deviceSecret.isNullOrBlank()
         if (incomplete) {
-            DeviceRegistryStore(context).clear()
             prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
             FcmTokenRegistration.enqueueCurrent(context)
         } else if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
