@@ -12,6 +12,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import dk.foss.jarvis.net.E2eLog
 
@@ -22,11 +24,44 @@ import dk.foss.jarvis.net.E2eLog
  */
 class ConversationRepository internal constructor(private val store: ConversationStore) {
 
-    /** In-memory only: the next model operation which must be acknowledged. */
-    @Volatile var pendingModelIntent: PendingModelIntent? = null
-    fun consumePendingModelIntent() { pendingModelIntent = null }
+    /** Durable: the next model operation which must be acknowledged. */
+    @Volatile private var pendingIntent: PendingModelIntent? = null
+    var pendingModelIntent: PendingModelIntent?
+        get() = pendingIntent
+        set(value) {
+            pendingIntent = value
+        }
+
+    suspend fun recordPendingModelIntent(intent: PendingModelIntent?) = lifecycleMutex.withLock {
+        if (intent == null) store.clearPendingModelIntent(activeId)
+        else store.savePendingModelIntent(activeId, intent.toStored())
+        store.saveActiveId(activeId)
+        pendingIntent = intent
+    }
+
+    suspend fun consumePendingModelIntentDurably(
+        expected: PendingModelIntent,
+        conversationId: String = activeId,
+    ) = lifecycleMutex.withLock {
+        if (activeId == conversationId && pendingIntent == expected) {
+            // Save the server binding before deleting the only durable record of
+            // the user's choice. A crash then restores either the pending intent
+            // or the session whose model operation was already acknowledged.
+            persistLocked()
+            store.clearPendingModelIntent(activeId)
+            pendingIntent = null
+        }
+    }
+
+    fun consumePendingModelIntent() {
+        pendingIntent = null
+        ioScope.launch { lifecycleMutex.withLock { store.clearPendingModelIntent(activeId) } }
+    }
     fun consumePendingModelIntent(expected: PendingModelIntent) {
-        if (pendingModelIntent == expected) pendingModelIntent = null
+        if (pendingIntent == expected) {
+            pendingIntent = null
+            ioScope.launch { lifecycleMutex.withLock { store.clearPendingModelIntent(activeId) } }
+        }
     }
 
     sealed class RebindOutcome {
@@ -46,6 +81,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
     // App-lifetime scope so a fire-and-forget save survives a ViewModel being cleared
     // (viewModelScope is cancelled BEFORE onCleared runs, which would drop the last save).
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleMutex = Mutex()
 
     val messages: SnapshotStateList<UiMessage> = mutableStateListOf()
 
@@ -63,7 +99,13 @@ class ConversationRepository internal constructor(private val store: Conversatio
     val activeConversationId: String get() = activeId
     private var title: String = ""
     private var createdAt: Long = System.currentTimeMillis()
-    @Volatile private var dirty = false
+    private val persistenceRevision = PersistenceRevision()
+    private var dirty: Boolean
+        get() = persistenceRevision.isDirty
+        set(value) {
+            if (value) persistenceRevision.changed()
+            else persistenceRevision.saved(persistenceRevision.current)
+        }
 
     fun startNew() {
         activeId = UUID.randomUUID().toString()
@@ -74,12 +116,45 @@ class ConversationRepository internal constructor(private val store: Conversatio
         title = ""
         createdAt = System.currentTimeMillis()
         dirty = false
-        pendingModelIntent = null
+        pendingIntent = null
         switched()
     }
 
+    /** Persist then replace the active conversation as one serialized lifecycle transition. */
+    suspend fun startNewAtomically() = lifecycleMutex.withLock {
+        persistLocked()
+        startNew()
+        store.saveActiveId(activeId)
+    }
+
     suspend fun open(id: String) {
-        val c = store.load(id) ?: return
+        lifecycleMutex.withLock {
+            if (id != activeId) persistLocked()
+            openLocked(id)
+            if (activeId == id) store.saveActiveId(id)
+        }
+    }
+
+    /** Restore the most recently updated saved conversation on process recreation. */
+    suspend fun restoreLatest() {
+        lifecycleMutex.withLock {
+            if (messages.isNotEmpty()) return
+            val active = store.loadActiveId() ?: return
+            openLocked(active)
+        }
+    }
+
+    private suspend fun openLocked(id: String) {
+        val c = store.load(id)
+        if (c == null) {
+            activeId = id
+            messages.clear()
+            sessionId = null; transport = null; origin = null; lastUsedAt = null
+            title = ""; createdAt = System.currentTimeMillis(); dirty = false
+            pendingIntent = store.loadPendingModelIntent(id)?.toIntent()
+            switched()
+            return
+        }
         activeId = c.id
         title = c.title
         createdAt = c.createdAt
@@ -89,7 +164,7 @@ class ConversationRepository internal constructor(private val store: Conversatio
         messages.addAll(c.messages.map { UiMessage(it.role, it.text) })
         E2eLog.log("convOpen id=${c.id} transport=${c.transport} sessionId=${c.sessionId} msgs=${c.messages.size}")
         dirty = false
-        pendingModelIntent = null
+        pendingIntent = store.loadPendingModelIntent(c.id)?.toIntent()
         switched()
     }
 
@@ -124,15 +199,21 @@ class ConversationRepository internal constructor(private val store: Conversatio
     /** Verify an existing Sessions id with the current credentials before rebinding it. */
     suspend fun verifySessionForCurrentOrigin(client: HermesClient, baseUrl: String, apiKey: String): RebindOutcome {
         val sid = sessionId ?: return RebindOutcome.NotNeeded
+        val conversationId = activeId
         if (transport != ChatTransportKind.SESSIONS) return RebindOutcome.NotNeeded
         val current = originIdentity(baseUrl, apiKey)
         if (origin == current) return RebindOutcome.NotNeeded
         return client.getSession(sid).fold(
             onSuccess = {
-                origin = current
-                store.rebindOrigin(activeId, current)
-                dirty = false
-                RebindOutcome.VerifiedRebound
+                lifecycleMutex.withLock {
+                    if (activeId != conversationId || sessionId != sid) {
+                        throw kotlinx.coroutines.CancellationException("Conversation changed")
+                    }
+                    origin = current
+                    dirty = true
+                    persistLocked()
+                    RebindOutcome.VerifiedRebound
+                }
             },
             onFailure = { e ->
                 val h = e as? HermesHttpError
@@ -195,8 +276,13 @@ class ConversationRepository internal constructor(private val store: Conversatio
         messages.filter { !it.isError }.map { ChatMessage(it.role, it.text) }
 
     suspend fun persist() {
+        lifecycleMutex.withLock { persistLocked() }
+    }
+
+    private suspend fun persistLocked() {
         if (!dirty) return
-        if (messages.none { !it.isError }) return
+        val savedId = activeId
+        val revision = persistenceRevision.current
         store.save(
             Conversation(
                 id = activeId,
@@ -210,7 +296,9 @@ class ConversationRepository internal constructor(private val store: Conversatio
                 lastUsedAt = lastUsedAt,
             ),
         )
-        dirty = false
+        store.saveActiveId(activeId)
+        // A delta arriving while IO was suspended must remain dirty.
+        if (activeId == savedId) persistenceRevision.saved(revision)
     }
 
     /** Fire-and-forget save on the app-lifetime scope (safe to call at teardown). */
@@ -220,10 +308,14 @@ class ConversationRepository internal constructor(private val store: Conversatio
 
     suspend fun list(): List<ConversationMeta> = store.list()
 
-    suspend fun delete(id: String) {
+    suspend fun delete(id: String) = lifecycleMutex.withLock {
         E2eLog.log("delete id=$id")
         store.delete(id)
-        if (id == activeId) startNew()
+        store.clearPendingModelIntent(id)
+        if (id == activeId) {
+            startNew()
+            store.saveActiveId(activeId)
+        }
     }
 
 
@@ -234,4 +326,15 @@ class ConversationRepository internal constructor(private val store: Conversatio
                 instance ?: ConversationRepository(ConversationStore(context)).also { instance = it }
             }
     }
+}
+
+private fun PendingModelIntent.toStored(): StoredPendingModelIntent = when (this) {
+    is PendingModelIntent.Set -> StoredPendingModelIntent("SET", modelId, label)
+    PendingModelIntent.Clear -> StoredPendingModelIntent("CLEAR")
+}
+
+private fun StoredPendingModelIntent.toIntent(): PendingModelIntent? = when (kind) {
+    "SET" -> modelId?.takeIf { it.isNotBlank() }?.let { PendingModelIntent.Set(it, label ?: it) }
+    "CLEAR" -> PendingModelIntent.Clear
+    else -> null
 }

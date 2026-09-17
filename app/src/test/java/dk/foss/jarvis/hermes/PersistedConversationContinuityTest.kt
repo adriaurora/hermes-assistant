@@ -2,6 +2,8 @@ package dk.foss.jarvis.hermes
 
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.ConversationStore
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -18,7 +20,12 @@ class PersistedConversationContinuityTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
     private lateinit var server: MockWebServer
 
-    @Before fun setUp() { server = MockWebServer(); server.start() }
+    @Before fun setUp() {
+        server = MockWebServer()
+        server.start()
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+    }
     @After fun tearDown() { server.shutdown() }
 
     @Test

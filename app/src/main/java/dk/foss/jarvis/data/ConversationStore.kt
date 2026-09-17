@@ -7,6 +7,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import dk.foss.jarvis.net.E2eLog
 
 /** Persists conversations as one JSON file each under filesDir/conversations/. */
 class ConversationStore {
@@ -22,38 +25,45 @@ class ConversationStore {
     }
 
     suspend fun save(conversation: Conversation) = withContext(Dispatchers.IO) {
-        runCatching {
-            // Write to a temp file then atomically rename, so concurrent/torn writes
-            // can't corrupt the JSON.
-            val target = File(dir, "${conversation.id}.json")
-            val tmp = File(dir, "${conversation.id}.json.tmp")
-            tmp.writeText(json.encodeToString(Conversation.serializer(), conversation))
-            if (!tmp.renameTo(target)) {
-                target.writeText(tmp.readText()); tmp.delete()
-            }
+        // Write to a temp file then atomically rename, so concurrent/torn writes
+        // can't corrupt the JSON. Do not catch failures: callers must retain dirty
+        // state and surface a persistence failure rather than claiming success.
+        val target = File(dir, "${conversation.id}.json")
+        val tmp = File(dir, "${conversation.id}.json.tmp")
+        tmp.writeText(json.encodeToString(Conversation.serializer(), conversation))
+        try {
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            // Still replace in one filesystem operation; unlike writeText(target),
+            // this never truncates the previous valid file before the move succeeds.
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
-        Unit
     }
 
     suspend fun load(id: String): Conversation? = withContext(Dispatchers.IO) {
         val f = File(dir, "$id.json")
         if (!f.exists()) return@withContext null
-        decodeConversation(f.readText())
+        runCatching { decodeConversation(f.readText()) }.onFailure {
+            E2eLog.log("conversationCorrupt id=$id type=${it::class.java.simpleName}")
+        }.getOrNull()
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        runCatching { File(dir, "$id.json").delete() }
-        Unit
+        val file = File(dir, "$id.json")
+        if (file.exists() && !file.delete()) error("Unable to delete conversation")
     }
 
     /** All conversations as lightweight metadata, newest first. */
     suspend fun list(): List<ConversationMeta> = withContext(Dispatchers.IO) {
-        (dir.listFiles { f -> f.extension == "json" } ?: emptyArray())
+        (dir.listFiles { f -> f.extension == "json" && !f.name.startsWith("pending-") } ?: emptyArray())
             .mapNotNull { f ->
-                runCatching {
-                    val c = decodeConversation(f.readText()) ?: return@runCatching null
+                try {
+                    val c = decodeConversation(f.readText()) ?: return@mapNotNull null
                     ConversationMeta(c.id, c.title, c.updatedAt, c.messages.size, c.sessionId, c.transport, c.origin)
-                }.getOrNull()
+                } catch (e: Exception) {
+                    E2eLog.log("conversationCorrupt file=${f.name.take(80)} type=${e::class.java.simpleName}")
+                    null
+                }
             }
             .sortedByDescending { it.updatedAt }
     }
@@ -63,8 +73,38 @@ class ConversationStore {
         load(id)?.let { save(it.copy(origin = newOrigin, updatedAt = System.currentTimeMillis())) }
     }
 
-    private fun decodeConversation(raw: String): Conversation? = runCatching {
-        try { json.decodeFromString(Conversation.serializer(), raw) }
+    internal suspend fun saveActiveId(id: String) = withContext(Dispatchers.IO) {
+        val tmp = File(dir, "active.tmp")
+        tmp.writeText(id)
+        try {
+            Files.move(tmp.toPath(), File(dir, "active").toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), File(dir, "active").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    internal suspend fun loadActiveId(): String? = withContext(Dispatchers.IO) {
+        File(dir, "active").takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    suspend fun savePendingModelIntent(id: String, intent: StoredPendingModelIntent) = withContext(Dispatchers.IO) {
+        val tmp = File(dir, "pending-$id.tmp")
+        tmp.writeText(json.encodeToString(PendingModelDraft.serializer(), PendingModelDraft(id, intent)))
+        try { Files.move(tmp.toPath(), File(dir, "pending-$id.json").toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+        catch (_: java.nio.file.AtomicMoveNotSupportedException) { Files.move(tmp.toPath(), File(dir, "pending-$id.json").toPath(), StandardCopyOption.REPLACE_EXISTING) }
+    }
+    suspend fun loadPendingModelIntent(id: String): StoredPendingModelIntent? = withContext(Dispatchers.IO) {
+        val file = File(dir, "pending-$id.json")
+        if (!file.isFile) return@withContext null
+        runCatching { json.decodeFromString(PendingModelDraft.serializer(), file.readText()).takeIf { it.conversationId == id }?.intent }.getOrNull()
+    }
+    suspend fun clearPendingModelIntent(id: String) = withContext(Dispatchers.IO) {
+        val file = File(dir, "pending-$id.json")
+        if (file.exists() && !file.delete()) error("Unable to clear pending model selection")
+    }
+
+    private fun decodeConversation(raw: String): Conversation? {
+        return try { json.decodeFromString(Conversation.serializer(), raw) }
         catch (_: Exception) {
             val obj = Json.decodeFromString(JsonObject.serializer(), raw).toMutableMap()
             val stored = obj["transport"]?.jsonPrimitive?.content
@@ -72,5 +112,5 @@ class ConversationStore {
             obj.remove("transport")
             json.decodeFromString(Conversation.serializer(), JsonObject(obj).toString())
         }
-    }.getOrNull()
+    }
 }

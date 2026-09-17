@@ -3,7 +3,6 @@ package dk.foss.jarvis.receivers
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import dk.foss.jarvis.MainActivity
 import android.util.Log
 import dk.foss.jarvis.data.DeviceRegistryStore
 import dk.foss.jarvis.data.SettingsStore
@@ -11,6 +10,7 @@ import dk.foss.jarvis.events.NotificationDeduper
 import dk.foss.jarvis.hermes.EventRpcClient
 import dk.foss.jarvis.hermes.EventFetchException
 import dk.foss.jarvis.hermes.HermesHttpException
+import dk.foss.jarvis.hermes.originIdentity
 import dk.foss.jarvis.data.DeviceRegistration
 import dk.foss.jarvis.data.RegistryState
 import dk.foss.jarvis.notifications.EventDispatcher
@@ -56,11 +56,18 @@ object PushIngress {
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return GateOutcome.NO_DEVICE
         val client = rpcClient(settings, device)
-        val gate = PushGate(PushDeps(settings.isConfigured, device.deviceId, client, deduper, notify = { envelope, id ->
+        val gate = PushGate(PushDeps(settings.isConfigured, device.deviceId, client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            onDeliveryRejected = { prefs.clearReserved(it) }, notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) DeliveryOutcome.PERMISSION_DENIED
-            else runCatching { postReminderNotification(context, envelope, id) }
+            else runCatching {
+                val origin = originIdentity(settings.baseUrl, settings.apiKey)
+                postReminderNotification(context, envelope, id, origin)
+            }
                 .fold({ DeliveryOutcome.SUCCESS }, { DeliveryOutcome.POST_FAILURE })
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) }))
+        }))
         return gate.handlePull(eventId)
     }
 
@@ -69,14 +76,23 @@ object PushIngress {
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return 0
         if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return 0
+        // A denied runtime permission is user-recoverable, not a transient
+        // network failure: leave the durable event pending without retrying.
+        if (!NotificationPermission.ensure(context)) return 0
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return 0
         var delivered = 0
         val client = rpcClient(settings, device)
-        val dispatcher = EventDispatcher(client, deduper, notify = { envelope, id ->
+        val dispatcher = EventDispatcher(client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            expectedDeviceId = device.deviceId,
+            notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
-            postReminderNotification(context, envelope, id); delivered++
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) })
+            val origin = originIdentity(settings.baseUrl, settings.apiKey)
+            postReminderNotification(context, envelope, id, origin); delivered++
+        }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync().getOrDefault(0).coerceAtMost(delivered)
     }
 
@@ -86,13 +102,20 @@ object PushIngress {
         val prefs = PushPrefs(context)
         val device = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration ?: return Result.success(0)
         if (!prefs.isEnabled() || prefs.isPendingRevoke() || prefs.isPendingCredentialClear() || !settings.isConfigured) return Result.success(0)
+        if (!NotificationPermission.ensure(context)) return Result.success(0)
         val transport = resolveTransport()
         if (transport == PushTransport.V1 && device.deviceSecret.isNullOrBlank()) return Result.success(0)
         val client = rpcClient(settings, device)
-        val dispatcher = EventDispatcher(client, deduper, notify = { envelope, id ->
+        val dispatcher = EventDispatcher(client, deduper,
+            wasDelivered = { prefs.wasDelivered(it) },
+            onDelivered = { prefs.recordDelivered(it); prefs.clearReserved(it) },
+            onReserved = { prefs.reserveDelivered(it) },
+            expectedDeviceId = device.deviceId,
+            notify = { envelope, id ->
             if (!NotificationPermission.ensure(context)) error("notification permission denied")
-            postReminderNotification(context, envelope, id)
-        }, wasDelivered = { prefs.wasDelivered(it) }, onDelivered = { prefs.recordDelivered(it) })
+            val origin = originIdentity(settings.baseUrl, settings.apiKey)
+            postReminderNotification(context, envelope, id, origin)
+        }, onDeliveryRejected = { prefs.clearReserved(it) })
         return dispatcher.onPendingSync()
     }
 
@@ -124,7 +147,9 @@ object PushIngress {
             EnrollmentAction.UpdateToken -> rpcClient(settings, existing).updateToken(token).fold({ registry.save(existing!!.deviceId, token, existing.hermesOrigin, settings.apiKey); TokenSyncOutcome.UPDATED }, { e ->
                 val x = e as? EventFetchException
                 when (RpcRetryPolicy.classify(x?.kind, x?.statusCode, x?.rpcCode)) { RpcErrorClass.REENROLL -> {
-                    registry.clear(); registerFresh()
+                    // Replace the record only after registration succeeds. A
+                    // transient failure must retain the previous identity.
+                    registerFresh()
                 }; RpcErrorClass.PERMANENT -> TokenSyncOutcome.PERMANENT; else -> TokenSyncOutcome.RETRYABLE }
             })
         }
@@ -138,8 +163,18 @@ object PushIngress {
             dk.foss.jarvis.push.FcmRevokeWorker.schedule(context)
             return
         }
+        val settings = SettingsStore(context).settings.first()
         val state = prefs.registrationState.first()
-        if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
+        val registration = (DeviceRegistryStore(context).loadOrMigrate(settings) as? RegistryState.Registered)?.registration
+        // ENABLED is only a local flag; encrypted credentials can be lost by a
+        // keystore reset/restore. Treat an incomplete V1 record as stale and
+        // re-enrol instead of permanently skipping registration on startup.
+        val incomplete = registration == null || registration.deviceId.isBlank() ||
+            registration.pushEndpoint.isBlank() || registration.deviceSecret.isNullOrBlank()
+        if (incomplete) {
+            prefs.setRegistrationState(FcmRegistrationState.REGISTERING)
+            FcmTokenRegistration.enqueueCurrent(context)
+        } else if (state != FcmRegistrationState.ENABLED) FcmTokenRegistration.enqueueCurrent(context)
     }
 
     suspend fun schedulePendingSync(context: Context) {
@@ -155,14 +190,19 @@ object PushIngress {
         Log.i("HermesPush", "push registration cleared")
     }
 
+    /**
+     * Non-destructive check: verify that a notification intent token is valid
+     * without consuming it.  This is called by push ingress before the actual
+     * notification is handled; the real consumption happens in MainActivity.
+     */
     suspend fun fromNotificationIntent(context: Context, intent: Intent): Boolean {
-        val eventId = intent.getStringExtra("event_id") ?: return false
-        if (!intent.getBooleanExtra("from_notification", false)) return false
-        context.startActivity(Intent(context, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            putExtras(intent)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        })
-        return eventId.isNotBlank()
+        if (intent.action != dk.foss.jarvis.notifications.HERMES_NOTIFICATION_TAP ||
+            intent.`package` != context.packageName) return false
+        val token = intent.getStringExtra("tap_token") ?: return false
+        val settings = SettingsStore(context).settings.first()
+        val currentOrigin = if (settings.isConfigured) originIdentity(settings.baseUrl, settings.apiKey) else ""
+        return dk.foss.jarvis.notifications.NotificationTapStore.peek(
+            context, token, currentOrigin
+        ) is dk.foss.jarvis.notifications.TapResult.Valid
     }
 }

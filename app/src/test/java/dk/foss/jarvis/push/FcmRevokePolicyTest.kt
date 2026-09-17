@@ -1,8 +1,12 @@
 package dk.foss.jarvis.push
 
 import dk.foss.jarvis.hermes.EventFetchException
+import dk.foss.jarvis.hermes.EventRpcClient
 import dk.foss.jarvis.hermes.FetchFailureKind
 import dk.foss.jarvis.hermes.HermesHttpException
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -147,11 +151,15 @@ class FcmRevokePolicyTest {
 
     private val server = MockWebServer()
 
-    @Before fun setUp() { server.start() }
+    @Before fun setUp() {
+        server.start()
+        val origin = canonicalEndpointIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+    }
     @After fun tearDown() { server.shutdown() }
 
     private fun client(apiKey: String = "KEY", deviceId: String = "d-1", deviceSecret: String = "s-1") =
-        dk.foss.jarvis.hermes.EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
+        EventRpcClient(server.url("/").toString().trimEnd('/'), apiKey, deviceId, deviceSecret)
 
     @Test fun `integration revoke 200 success classify null is RevokeSuccess`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200)
@@ -250,5 +258,16 @@ class FcmRevokePolicyTest {
         val ex = result.exceptionOrNull() as EventFetchException
         assertEquals(FetchFailureKind.NETWORK, ex.kind)
         assertEquals(FcmRevokePolicy.RevokeOutcome.RetryAgain, FcmRevokePolicy.classify(ex))
+    }
+
+    @Test fun `classify network_blocked EventFetchException as success`() {
+        // When the old origin was manually revoked before the revoke worker ran,
+        // the gate blocks the revoke call. The old device is effectively gone —
+        // the worker should treat this as success (no infinite retry).
+        val blocked = dk.foss.jarvis.net.BlockedRequest("HTTP blocked: old origin revoked")
+        val efx = EventFetchException(
+            FetchFailureKind.HTTP, 403, blocked, "network_blocked",
+        )
+        assertEquals(FcmRevokePolicy.RevokeOutcome.RevokeSuccess, FcmRevokePolicy.classify(efx))
     }
 }

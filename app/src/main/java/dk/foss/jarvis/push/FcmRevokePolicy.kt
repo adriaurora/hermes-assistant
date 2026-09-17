@@ -38,6 +38,10 @@ object FcmRevokePolicy {
         val code = e.rpcCode
         if (code == "device_not_found" || code == "device_revoked") return RevokeOutcome.RevokeSuccess
         if (code == "device_auth_failed") return RevokeOutcome.CredentialRejected
+        // When the old origin was manually revoked before the revoke worker ran,
+        // the gate blocks with BlockedRequest → EventFetchException("network_blocked").
+        // The old device is effectively gone — treat as success (no infinite retry).
+        if (code == "network_blocked") return RevokeOutcome.RevokeSuccess
         return e.statusCode?.let { classifyHttp(it) }
             ?: RevokeOutcome.RetryAgain
     }

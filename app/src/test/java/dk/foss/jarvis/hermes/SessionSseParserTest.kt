@@ -1,5 +1,7 @@
 package dk.foss.jarvis.hermes
 
+import dk.foss.jarvis.net.Http
+import dk.foss.jarvis.net.InMemoryApprovedOriginsStore
 import okio.Buffer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.mockwebserver.MockResponse
@@ -24,7 +26,11 @@ class SessionSseParserTest {
     private val server = MockWebServer()
     private val mediaType = "text/event-stream; charset=utf-8".toMediaType()
 
-    @Before fun setUp() { server.start() }
+    @Before fun setUp() {
+        server.start()
+        val origin = originIdentity(server.url("/").toString().trimEnd('/'))
+        (Http.testingGate.approvedOrigins as InMemoryApprovedOriginsStore).addSync(origin)
+    }
     @After fun tearDown() { server.shutdown() }
 
     private fun client(): HermesClient =

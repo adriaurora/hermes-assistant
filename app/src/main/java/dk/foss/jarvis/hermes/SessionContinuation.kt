@@ -3,6 +3,7 @@ package dk.foss.jarvis.hermes
 import dk.foss.jarvis.data.ConversationRepository
 import dk.foss.jarvis.data.PendingModelIntent
 import dk.foss.jarvis.net.E2eLog
+import dk.foss.jarvis.ui.ModelOperationCoordinator
 
 sealed class SessionTurnStartOutcome {
     data class Started(val sessionId: String, val runtime: RuntimeInfo? = null) : SessionTurnStartOutcome()
@@ -20,18 +21,28 @@ suspend fun startSessionTurn(
     uniqueSuffix: String,
     intent: PendingModelIntent?,
 ): SessionTurnStartOutcome {
-    val wasExisting = !repo.sessionId.isNullOrEmpty()
+    val conversationId = repo.activeConversationId
+    fun requireSameConversation() {
+        if (repo.activeConversationId != conversationId) throw kotlinx.coroutines.CancellationException("Conversation changed")
+    }
     val sid = repo.sessionId?.takeIf { it.isNotEmpty() }
         ?: createSessionForFirstTurn(client, title, uniqueSuffix).getOrElse {
         return SessionTurnStartOutcome.CreateFailed(it)
-    }.also { created -> repo.bindSession(origin, created, ChatTransportKind.SESSIONS) }
+    }.also { created ->
+        requireSameConversation()
+        repo.bindSession(origin, created, ChatTransportKind.SESSIONS)
+    }
     var runtime: RuntimeInfo? = null
     E2eLog.log("model intent=${intentLogName(intent)}")
-    if (intent != null && !(intent is PendingModelIntent.Clear && !wasExisting)) {
-        val result = when (intent) {
+    if (intent != null) {
+        val operation = ModelOperationCoordinator.shared.next(conversationId, origin, sid)
+        val result = ModelOperationCoordinator.shared.run(operation, {
+            repo.activeConversationId == conversationId && repo.sessionId == sid && repo.origin == origin
+        }) { when (intent) {
             is PendingModelIntent.Set -> client.setSessionModel(sid, intent.modelId)
             PendingModelIntent.Clear -> client.clearSessionModel(sid)
-        }
+        } } ?: return SessionTurnStartOutcome.LockFailed(sid, kotlinx.coroutines.CancellationException("stale model operation"))
+        requireSameConversation()
         if (result.isFailure) {
             val error = result.exceptionOrNull()!!
             val h = error as? HermesHttpError
@@ -41,7 +52,9 @@ suspend fun startSessionTurn(
         runtime = result.getOrNull()?.runtime
         E2eLog.log("model intent=${intentLogName(intent)} ack=ok")
     }
-    if (intent != null) repo.consumePendingModelIntent(intent)
+    requireSameConversation()
+    if (intent != null) repo.consumePendingModelIntentDurably(intent, conversationId)
+    requireSameConversation()
     return SessionTurnStartOutcome.Started(sid, runtime)
 }
 

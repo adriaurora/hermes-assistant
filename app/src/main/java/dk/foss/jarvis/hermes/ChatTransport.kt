@@ -24,6 +24,22 @@ data class HermesHttpError(val code: Int?, val rpcCode: String?, val rawBody: St
     val isSessionMissing: Boolean get() = code == 404 && (rpcCode == "session_not_found" || rawBody?.contains("session_not_found") == true)
 }
 
+/** Stable product wording for transport failures; never expose exception text to UI. */
+fun semanticChatError(error: Throwable): String {
+    val http = error as? HermesHttpError
+    return when {
+        error is StreamClosedBeforeTerminalError ->
+            "Response stream ended before completion. Open the conversation to reconcile its latest server history."
+        http?.isAuth == true -> "Authentication failed. Check the API key in Settings."
+        http?.isSessionMissing == true || http?.rpcCode == "session_not_found" ->
+            "Remote session no longer exists (session_not_found). Start a new conversation from History to continue."
+        http?.code in 408..499 -> "Hermes rejected the request. Check the conversation and try again."
+        http?.code in 500..599 -> "Hermes is temporarily unavailable. Try again later."
+        error is java.util.concurrent.CancellationException -> ""
+        else -> "Couldn't reach Hermes. Check the connection and try again."
+    }
+}
+
 fun parseErrorBody(body: String): Pair<String?, String?> = runCatching {
     val obj = HermesJson.parseToJsonElement(body).jsonObject
     val error = obj["error"]
@@ -75,10 +91,12 @@ object ChatTransportSelector {
 /**
  * Canonical connection identity for conversation binding and origin isolation.
  *
- * Builds a stable hash from the full base URL (scheme + host lowercased, default port folded,
- * path preserved, no trailing slash) combined with a short non-reversible fingerprint of the API key
- * (full 64-hex SHA-256). If [apiKey] is null or blank only the URL forms the identity —
- * documented so callers know conversations on the same host but different keys stay distinct.
+ * Builds a stable hash from the full base URL (scheme + host lowercased,
+ * default port folded, path preserved, no trailing slash) combined with a
+ * non-reversible SHA-256 fingerprint of the API key (full 64-hex digest).
+ * If [apiKey] is null or blank only the URL forms the identity.
+ * This preserves API-key conversation isolation: conversations on the same
+ * host but different keys stay distinct.
  */
 fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatching {
     val uri = URI(baseUrl.trim().trimEnd('/'))
@@ -89,10 +107,46 @@ fun originIdentity(baseUrl: String, apiKey: String? = null): String = runCatchin
     val path = uri.path.ifEmpty { "/" }
     val urlPart = "$scheme://$host$port$path"
     val keyHash = apiKey?.let { key ->
-        if (key.isBlank()) return@let null
-        val md = MessageDigest.getInstance("SHA-256")
-        md.update(key.toByteArray(Charsets.UTF_8))
-        md.digest().joinToString("") { "%02x".format(it) }
+        if (key.isBlank()) null
+        else {
+            val md = MessageDigest.getInstance("SHA-256")
+            md.update(key.toByteArray(Charsets.UTF_8))
+            md.digest().joinToString("") { "%02x".format(it) }
+        }
     }
     if (keyHash != null) "$urlPart-$keyHash" else urlPart
 }.getOrElse { baseUrl.trim().trimEnd('/').lowercase() }
+
+/**
+ * URL-only canonical endpoint identity for Settings / gate / UI comparisons.
+ *
+ * Returns a stable normalised origin (scheme + lowercase host + explicit
+ * default port + path, no trailing slash).  Unlike [originIdentity] this
+ * **never** includes an API-key fingerprint — it is used exclusively for
+ * endpoint-approval decisions where key rotation must not break continuity.
+ *
+ * **Strict**: throws for invalid URIs — no fallback.  Caller must validate
+ * through [NetworkGate.validate] before using the result.
+ */
+fun canonicalEndpointIdentity(baseUrl: String): String {
+    val trimmed = baseUrl.trim().trimEnd('/')
+    if (trimmed.isEmpty()) throw IllegalArgumentException("Empty URL")
+    val uri = URI.create(trimmed)
+    if (uri.isOpaque) throw IllegalArgumentException("Malformed URL (opaque): $trimmed")
+    val scheme = uri.scheme
+    if (scheme == null ||
+        !scheme.equals("http", true) && !scheme.equals("https", true)) {
+        throw IllegalArgumentException("Unsupported scheme: $trimmed")
+    }
+    if (uri.host == null) throw IllegalArgumentException("Missing host: $trimmed")
+    if (uri.userInfo != null) throw IllegalArgumentException("URL contains userinfo: $trimmed")
+    if (uri.query != null) throw IllegalArgumentException("URL contains query: $trimmed")
+    if (uri.fragment != null) throw IllegalArgumentException("URL contains fragment: $trimmed")
+
+    val lowerScheme = scheme.lowercase()
+    val host = uri.host.lowercase()
+    val defaultPort = if (lowerScheme == "http") 80 else 443
+    val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+    val path = uri.path.ifEmpty { "/" }
+    return "$lowerScheme://$host$port$path"
+}

@@ -1,6 +1,6 @@
 package dk.foss.jarvis.data
 
-import dk.foss.jarvis.hermes.originIdentity
+import dk.foss.jarvis.hermes.canonicalEndpointIdentity
 
 /** Pure decision for changing the configured Hermes connection. */
 data class ConnectionTransition(
@@ -12,7 +12,7 @@ data class ConnectionTransition(
         fun decide(old: JarvisSettings, new: JarvisSettings, registration: DeviceRegistration?): ConnectionTransition =
             ConnectionTransition(
                 revokeRequired = registration != null &&
-                    originIdentity(old.baseUrl) != originIdentity(new.baseUrl),
+                    canonicalEndpointIdentity(old.baseUrl) != canonicalEndpointIdentity(new.baseUrl),
                 credentialClear = old.apiKey.isNotEmpty() && new.apiKey.isEmpty(),
                 preservedRegistration = registration,
             )

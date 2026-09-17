@@ -14,6 +14,11 @@ package dk.foss.jarvis.ui
  */
 object SentenceSplitter {
 
+    /** Flush a terminal reply even when its last sentence lacks punctuation. */
+    fun drainRemainder(buffer: StringBuilder): String = buffer.toString().trim().also {
+        buffer.setLength(0)
+    }
+
     const val SOFT_CAP_CHARS = 180
     const val MIN_SOFT_CUT_INDEX = 40
 

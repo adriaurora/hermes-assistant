@@ -40,7 +40,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             val s = settingsStore.settings.first()
             val local = repo.list()
             val remote = fetchServerSessions()
-            items.value = merge(local, remote)
+            items.value = merge(local, remote, originIdentity(s.baseUrl, s.apiKey))
         }
     }
 
@@ -56,11 +56,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>): List<HistoryEntry> {
+    private fun merge(local: List<ConversationMeta>, remote: List<SessionSummary>, currentOrigin: String): List<HistoryEntry> {
         val entries = mutableListOf<HistoryEntry>()
         val boundSessions = mutableSetOf<String>()
         for (m in local) {
-            m.sessionId?.let { boundSessions.add(it) }
+            if (m.origin == currentOrigin) m.sessionId?.let { boundSessions.add(it) }
             entries.add(
                 HistoryEntry(
                     key = m.id,
@@ -94,11 +94,38 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         return entries.sortedByDescending { it.updatedAt }
     }
 
+    /**
+     * Resolve a server session to a local mirror or hydrate it through the API.
+     *
+     * @param notificationOrigin  The endpoint identity embedded in the notification tap.
+     *                           If it doesn't match the current settings origin, the
+     *                           session is NOT opened and a visible stale notice is shown.
+     */
+    fun openNotificationSession(sessionId: String, notificationOrigin: String?, onReady: () -> Unit) {
+        viewModelScope.launch {
+            val s = settingsStore.settings.first()
+            if (!s.isConfigured) {
+                notice.value = "Configure Hermes in Settings first"
+                return@launch
+            }
+            // Validate the notification origin against the current settings.
+            // If the origin mismatches, the notification belongs to a different
+            // endpoint/credential. Do NOT open the session or make network calls.
+            val currentOrigin = originIdentity(s.baseUrl, s.apiKey)
+            if (notificationOrigin != null && notificationOrigin != currentOrigin) {
+                notice.value = "This notification belongs to a previous Hermes connection. It has been ignored."
+                return@launch
+            }
+            val mirror = findLocalSessionMirror(repo.list(), sessionId, currentOrigin)
+            if (mirror != null) open(mirror, onReady)
+            else openServer(sessionId, "Hermes conversation", System.currentTimeMillis(), onReady)
+        }
+    }
+
     /** Persist the current conversation, load the chosen one, then continue. */
     fun open(id: String, onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.open(id)
+            repo.open(id) // serializes with any pending save and replaces active state atomically
             E2eLog.log("historyOpen id=${repo.activeConversationId} transport=${repo.transport} sessionId=${repo.sessionId}")
             // If this is a SESSIONS conversation bound to the current server,
             // try to refresh messages from the server (authoritative copy).
@@ -171,17 +198,26 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     repo.persist()
                     repo.importServerSession(serverSessionId, entryTitle, createdAtMs, msgs, origin = origin, transport = transport)
+                    repo.persist()
                     onReady()
                 },
-                onFailure = { err: Throwable -> notice.value = "Could not load session: ${err.message?.take(120)}" },
+                onFailure = { err: Throwable ->
+                    // Network and protocol failures are useful in diagnostics, but are not
+                    // product-facing text (they may contain socket/HTTP implementation details).
+                    E2eLog.log("historyImportFailed type=${err::class.java.simpleName}")
+                    notice.value = when ((err as? HermesHttpError)?.code) {
+                        401, 403 -> "Authentication failed while loading this session."
+                        404 -> "This session no longer exists in Hermes."
+                        else -> "Could not load this session. Try again later."
+                    }
+                },
             )
         }
     }
 
     fun startNew(onReady: () -> Unit) {
         viewModelScope.launch {
-            repo.persist()
-            repo.startNew()
+            repo.startNewAtomically()
             onReady()
         }
     }
